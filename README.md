@@ -156,6 +156,60 @@ rank: staff
 
 hived 在 hire 时把 hive-skill-runner **hardlink 到 Image 目录**，作为 entry 送进沙箱 —— 对 daemon 而言它仍只是一个普通 Agent 子进程，同样的 namespace / Rank / 配额。runner 内部读 SKILL.md 当 system prompt，驱动一个最多 20 轮的 LLM 循环（ReAct-lite JSON 协议：`{"tool": "...", "args": {...}}` 或 `{"answer": "..."}`）。
 
+### 不写代码也不写 prompt：`kind: workflow` Agent
+
+适合"步骤结构清晰、不想让 LLM 每步自由裁量"的任务。两种模式共用 `cmd/hive-workflow-runner`：
+
+**A. 静态声明式**（`examples/url-summary/`）
+
+```yaml
+# agent.yaml
+name: url-summary
+version: 0.1.0
+kind: workflow
+workflow: flow.json
+tools: [net, llm]
+```
+
+```json
+// flow.json — 用户完全决定执行顺序
+{
+  "steps": [
+    {"id":"fetch",   "tool":"net_fetch",    "args":{"url":"$input.url"}},
+    {"id":"summary", "tool":"llm_complete", "args":{
+       "model":"gpt-4o-mini",
+       "messages":[
+         {"role":"system","content":"Summarise in one sentence."},
+         {"role":"user",  "content":"$steps.fetch.body"}
+       ]
+     }}
+  ],
+  "output": "$steps.summary.text"
+}
+```
+
+变量替换规则：`$input.<path>` 来自 task 输入；`$steps.<id>.<path>` 来自前面步骤的 result；整串替换保留原类型（不是字符串插值）。
+
+**B. LLM 规划式**（`examples/research/`）
+
+```yaml
+# agent.yaml
+kind: workflow
+planner: PLANNER.md
+model: gpt-4o-mini
+tools: [llm]
+```
+
+```markdown
+# PLANNER.md
+给你一个问题，规划一个 ≤3 步的 workflow：先 brainstorm 几个角度，再基于这些角度写最终答案。
+只返回一个 JSON workflow 对象，不要 markdown fence。
+```
+
+流程：runner 把 task 输入交给 planner LLM，LLM 产生 `flow.json`，runner 校验后 deterministic 地执行。跟 skill 模式（ReAct、每步问 LLM）的区别：**规划只一次**，执行过程不再调 LLM 做决策 —— 省 token、结果更可预测。
+
+两种模式通过 manifest 字段区分：`workflow:` 对应 A，`planner:` 对应 B，不能同时设。
+
 ### Agent ↔ Hive 方法集
 
 | 方向 | Method | 说明 |
@@ -258,7 +312,8 @@ hive up github://xxx1766/Hive-/registry/hivefiles/skill-demo
 cmd/                      CLI + daemon 入口
 ├── hive/                 hive CLI
 ├── hived/                hived daemon
-└── hive-skill-runner/    内置 runner (kind=skill Agent 的 entry binary)
+├── hive-skill-runner/    内置 runner (kind=skill Agent 的 entry binary)
+└── hive-workflow-runner/ 内置 runner (kind=workflow Agent 的 entry binary)
 
 internal/
 ├── protocol/             JSON-RPC 2.0 + NDJSON wire
@@ -286,7 +341,9 @@ examples/
 ├── fetch/                intern rank，演示 net/fetch + API 配额
 ├── upper/                staff rank，纯本地 + peer 消息
 ├── summarize/            staff rank，演示 llm/complete + token 配额
-└── brief/                staff rank，kind: skill —— 只有 SKILL.md + agent.yaml
+├── brief/                staff rank，kind: skill —— 只有 SKILL.md + agent.yaml
+├── url-summary/          staff rank，kind: workflow（静态）—— agent.yaml + flow.json
+└── research/             staff rank，kind: workflow（LLM 规划）—— agent.yaml + PLANNER.md
 
 hivefiles/demo/           demo 用的两份 Hivefile
 scripts/demo.sh           一键端到端演示
@@ -338,7 +395,7 @@ make demo           # 端到端 smoke（需要 root）
 - [ ] **`ai_tool/invoke` proxy**：Agent 通过 `exec` 方式调 Claude Code CLI / Cursor CLI。新建 `internal/proxy/aitoolproxy/`；Rank 加 `AIToolAllowed`；配额 key `api_calls:ai_tool:<name>`；注意会话/上下文持久化语义。
 - [x] ~~**`manifest.kind` 字段**~~ —— 已完成：`internal/image/manifest.go` 加了 `Kind` / `Skill` / `Model` / `Tools` 字段；`internal/daemon/daemon.go:handleAgentHire` 检测 Kind 并走 `prepareSkillImage` 分支。
 - [x] ~~**`kind: skill` Agent 形态**~~ —— 已完成：`cmd/hive-skill-runner/` 二进制 + ReAct-lite JSON 循环；`examples/brief/` 作为参考 skill Agent。
-- [ ] **`kind: json` Agent 形态**：新增 `cmd/hive-workflow-runner/main.go` —— 解释声明式 workflow（step / action / next）；不依赖 LLM，给硬编码流程用。
+- [x] ~~**`kind: workflow` Agent 形态**~~ —— 已完成：`cmd/hive-workflow-runner` 支持两种模式：`workflow: flow.json` 静态声明 + `planner: PLANNER.md` LLM 规划；变量替换 `$input.x` / `$steps.<id>.<path>`；`examples/{url-summary,research}/` 两个参考实现。
 
 ### 🚀 v2（`DEMO_PLAN.md` 里明确列为"不做"的大特性）
 

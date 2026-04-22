@@ -4,7 +4,7 @@ BIN_DIR := bin
 GO      := go
 LDFLAGS := -X github.com/anne-x/hive/internal/version.Version=$(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 
-build: $(BIN_DIR)/hived $(BIN_DIR)/hive $(BIN_DIR)/hive-skill-runner examples
+build: $(BIN_DIR)/hived $(BIN_DIR)/hive $(BIN_DIR)/hive-skill-runner $(BIN_DIR)/hive-workflow-runner examples
 
 $(BIN_DIR)/hived: $(shell find . -name '*.go' -not -path './examples/*')
 	@mkdir -p $(BIN_DIR)
@@ -18,7 +18,11 @@ $(BIN_DIR)/hive-skill-runner: $(shell find . -name '*.go' -not -path './examples
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -ldflags "$(LDFLAGS)" -o $@ ./cmd/hive-skill-runner
 
-EXAMPLES := echo fetch upper summarize brief
+$(BIN_DIR)/hive-workflow-runner: $(shell find . -name '*.go' -not -path './examples/*')
+	@mkdir -p $(BIN_DIR)
+	$(GO) build -ldflags "$(LDFLAGS)" -o $@ ./cmd/hive-workflow-runner
+
+EXAMPLES := echo fetch upper summarize brief url-summary research
 
 examples:
 	@for agent in $(EXAMPLES); do \

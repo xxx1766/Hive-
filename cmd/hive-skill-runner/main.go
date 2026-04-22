@@ -10,22 +10,16 @@
 //	                     (net, fs, peer, llm)
 //	Stdin/stdout: JSON-RPC 2.0 to hived, via sdk/go.
 //
-// For each task/run the runner:
-//  1. loads SKILL.md once
-//  2. builds a two-message conversation (system = SKILL.md + tool schema,
-//     user = task input)
-//  3. iterates up to maxSkillIterations times:
-//     - calls llm/complete
-//     - parses the model's reply as {"tool": ..., "args": ...}
-//     or {"answer": ...}
-//     - if tool: dispatches through Hive's proxy (net_fetch → a.NetFetch,
-//     fs_read → a.FSRead, etc.); appends the tool's result as a new
-//     user message; loops
-//     - if answer: replies task/done with it; exits the loop
-//  4. if the loop hits the iteration cap without an answer, fails the task.
+// Algorithm: ReAct-lite JSON loop. Each iteration prompts the LLM with
+// the full conversation so far; the model must reply as either
 //
-// The runner itself is a normal Hive Agent — same sandbox, same Rank, same
-// quota accounting. The isolation story is unchanged.
+//	{"tool": "<name>", "args": {...}}    — dispatched via internal/runners
+//	{"answer": "<text>"}                 — terminates; replies task/done
+//
+// Plain-text (non-JSON) replies are treated as the final answer so the
+// mock LLM provider path still produces a legible demo output. The
+// runner itself is a normal Hive Agent — same sandbox, same Rank, same
+// quota accounting; isolation is not weakened.
 package main
 
 import (
@@ -36,10 +30,14 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/anne-x/hive/internal/runners"
 	hive "github.com/anne-x/hive/sdk/go"
 )
 
-const maxSkillIterations = 20
+const (
+	maxSkillIterations = 20
+	toolResultCap      = 2000 // bytes of tool result shown to the LLM
+)
 
 func main() {
 	a := hive.MustConnect()
@@ -57,13 +55,13 @@ func main() {
 	}
 	skill := string(skillBytes)
 
-	model := os.Getenv("HIVE_SKILL_MODEL")
+	model := os.Getenv("HIVE_MODEL")
 	if model == "" {
 		model = "gpt-4o-mini"
 	}
-	tools := parseCSV(os.Getenv("HIVE_SKILL_TOOLS"))
+	tools := parseCSV(os.Getenv("HIVE_TOOLS"))
 	if len(tools) == 0 {
-		tools = []string{"net", "fs", "peer"}
+		tools = []string{runners.GroupNet, runners.GroupFS, runners.GroupPeer}
 	}
 
 	a.Log("info", "skill runner ready", map[string]any{
@@ -103,15 +101,20 @@ func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, system, model s
 			return
 		}
 		if parsed.Tool == "" {
-			// Fallback: treat a non-JSON response as the final answer.
-			// This keeps the mock provider path usable — mock returns plain
-			// text, which we surface verbatim instead of failing.
-			_ = task.Reply(map[string]any{"answer": strings.TrimSpace(text), "iterations": iter, "format": "plain"})
+			// Fallback: non-JSON reply → surface verbatim as the answer.
+			// Keeps the mock provider path usable end-to-end.
+			_ = task.Reply(map[string]any{
+				"answer":     strings.TrimSpace(text),
+				"iterations": iter,
+				"format":     "plain",
+			})
 			return
 		}
 
-		if !toolAllowed(parsed.Tool, tools) {
-			a.Log("warn", "tool not allowed by manifest", map[string]any{"tool": parsed.Tool, "allowed": tools})
+		if !runners.ToolAllowed(parsed.Tool, tools) {
+			a.Log("warn", "tool not allowed by manifest", map[string]any{
+				"tool": parsed.Tool, "allowed": tools,
+			})
 			msgs = append(msgs, hive.LLMMessage{
 				Role:    "user",
 				Content: fmt.Sprintf("tool %q is not in the allow-list %v", parsed.Tool, tools),
@@ -119,7 +122,7 @@ func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, system, model s
 			continue
 		}
 
-		result, terr := dispatchTool(ctx, a, parsed.Tool, parsed.Args)
+		result, terr := runners.DispatchTool(ctx, a, parsed.Tool, parsed.Args)
 		if terr != nil {
 			a.Log("error", "tool failed", map[string]any{"tool": parsed.Tool, "err": terr.Error()})
 			msgs = append(msgs, hive.LLMMessage{
@@ -128,10 +131,10 @@ func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, system, model s
 			})
 			continue
 		}
-		a.Log("info", "tool ok", map[string]any{"tool": parsed.Tool, "result_bytes": len(result)})
+		a.Log("info", "tool ok", map[string]any{"tool": parsed.Tool})
 		msgs = append(msgs, hive.LLMMessage{
 			Role:    "user",
-			Content: fmt.Sprintf("tool %s returned: %s", parsed.Tool, result),
+			Content: fmt.Sprintf("tool %s returned: %s", parsed.Tool, runners.ResultText(result, toolResultCap)),
 		})
 	}
 
@@ -152,14 +155,12 @@ var jsonObjRe = regexp.MustCompile(`\{(?s).*\}`)
 
 func parseReply(text string) reply {
 	trimmed := strings.TrimSpace(text)
-	// Try direct parse first (common for well-behaved models).
 	var r reply
 	if err := json.Unmarshal([]byte(trimmed), &r); err == nil {
 		if r.Tool != "" || r.Answer != "" {
 			return r
 		}
 	}
-	// Fall back: pull the outermost { ... } block.
 	if m := jsonObjRe.FindString(trimmed); m != "" {
 		var r2 reply
 		if err := json.Unmarshal([]byte(m), &r2); err == nil {
@@ -169,102 +170,6 @@ func parseReply(text string) reply {
 		}
 	}
 	return reply{}
-}
-
-// ── Tool dispatch ─────────────────────────────────────────────────────────
-
-// toolAllowed checks whether the tool belongs to one of the allow-list
-// groups. Groups: net (net_fetch), fs (fs_read/fs_write/fs_list),
-// peer (peer_send), llm (llm_complete — though skills rarely need it
-// since they already drive an LLM loop).
-func toolAllowed(tool string, allowed []string) bool {
-	group := toolGroup(tool)
-	if group == "" {
-		return false
-	}
-	for _, g := range allowed {
-		if g == group {
-			return true
-		}
-	}
-	return false
-}
-
-func toolGroup(tool string) string {
-	switch {
-	case tool == "net_fetch":
-		return "net"
-	case strings.HasPrefix(tool, "fs_"):
-		return "fs"
-	case tool == "peer_send":
-		return "peer"
-	case tool == "llm_complete":
-		return "llm"
-	}
-	return ""
-}
-
-func dispatchTool(ctx context.Context, a *hive.Agent, name string, args map[string]any) (string, error) {
-	switch name {
-	case "net_fetch":
-		url, _ := args["url"].(string)
-		if url == "" {
-			return "", fmt.Errorf("net_fetch: url is required")
-		}
-		status, body, err := a.NetFetch(ctx, "GET", url, nil, nil)
-		if err != nil {
-			return "", err
-		}
-		return fmt.Sprintf(`{"status":%d,"body":%q}`, status, truncate(string(body), 1000)), nil
-
-	case "fs_read":
-		path, _ := args["path"].(string)
-		if path == "" {
-			return "", fmt.Errorf("fs_read: path is required")
-		}
-		data, err := a.FSRead(ctx, path)
-		if err != nil {
-			return "", err
-		}
-		return truncate(string(data), 2000), nil
-
-	case "fs_write":
-		path, _ := args["path"].(string)
-		content, _ := args["content"].(string)
-		if path == "" {
-			return "", fmt.Errorf("fs_write: path is required")
-		}
-		if err := a.FSWrite(ctx, path, []byte(content)); err != nil {
-			return "", err
-		}
-		return "ok", nil
-
-	case "fs_list":
-		path, _ := args["path"].(string)
-		if path == "" {
-			return "", fmt.Errorf("fs_list: path is required")
-		}
-		entries, err := a.FSList(ctx, path)
-		if err != nil {
-			return "", err
-		}
-		b, _ := json.Marshal(entries)
-		return string(b), nil
-
-	case "peer_send":
-		to, _ := args["to"].(string)
-		if to == "" {
-			return "", fmt.Errorf("peer_send: to is required")
-		}
-		payload := args["payload"]
-		if err := a.PeerSend(ctx, to, payload); err != nil {
-			return "", err
-		}
-		return "sent", nil
-
-	default:
-		return "", fmt.Errorf("unknown tool: %q", name)
-	}
 }
 
 // ── Prompt construction ──────────────────────────────────────────────────
@@ -277,15 +182,15 @@ func buildSystemPrompt(skill string, tools []string) string {
 	b.WriteString("Two reply shapes:\n")
 	b.WriteString(`  {"tool": "<name>", "args": {...}}   — call a tool; you'll get the result back in the next user turn` + "\n")
 	b.WriteString(`  {"answer": "<text>"}                — final answer; Hive stops the loop` + "\n\n")
-	if containsAny(tools, []string{"net"}) {
+	if containsAny(tools, []string{runners.GroupNet}) {
 		b.WriteString(`Tool: net_fetch — args {"url": string}; returns JSON {"status":int,"body":string}` + "\n")
 	}
-	if containsAny(tools, []string{"fs"}) {
+	if containsAny(tools, []string{runners.GroupFS}) {
 		b.WriteString(`Tool: fs_read  — args {"path": string}; returns file contents` + "\n")
 		b.WriteString(`Tool: fs_write — args {"path": string, "content": string}; returns "ok"` + "\n")
 		b.WriteString(`Tool: fs_list  — args {"path": string}; returns JSON array of entries` + "\n")
 	}
-	if containsAny(tools, []string{"peer"}) {
+	if containsAny(tools, []string{runners.GroupPeer}) {
 		b.WriteString(`Tool: peer_send — args {"to": string, "payload": any}; sends a message to another Agent in the same Room` + "\n")
 	}
 	return b.String()
@@ -314,11 +219,4 @@ func containsAny(hay, needles []string) bool {
 		}
 	}
 	return false
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }

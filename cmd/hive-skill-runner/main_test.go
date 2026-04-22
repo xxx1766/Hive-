@@ -6,6 +6,10 @@ import (
 	"testing"
 )
 
+// The LLM-reply parser is the only unit-testable logic that stayed in the
+// skill runner after extracting dispatch/group helpers to internal/runners.
+// Tool-level tests live in internal/runners/tools_test.go.
+
 func TestParseReply_DirectJSON(t *testing.T) {
 	r := parseReply(`{"answer":"done"}`)
 	if r.Answer != "done" {
@@ -47,36 +51,6 @@ func TestParseReply_IrrelevantJSONObject_Rejected(t *testing.T) {
 	}
 }
 
-func TestToolGroup(t *testing.T) {
-	cases := map[string]string{
-		"net_fetch":    "net",
-		"fs_read":      "fs",
-		"fs_write":     "fs",
-		"fs_list":      "fs",
-		"peer_send":    "peer",
-		"llm_complete": "llm",
-		"bogus":        "",
-	}
-	for tool, want := range cases {
-		if got := toolGroup(tool); got != want {
-			t.Errorf("toolGroup(%q) = %q, want %q", tool, got, want)
-		}
-	}
-}
-
-func TestToolAllowed(t *testing.T) {
-	allow := []string{"net", "peer"}
-	if !toolAllowed("net_fetch", allow) {
-		t.Error("net_fetch should be allowed")
-	}
-	if toolAllowed("fs_read", allow) {
-		t.Error("fs_read should NOT be allowed (fs not in list)")
-	}
-	if toolAllowed("unknown_tool", allow) {
-		t.Error("unknown tool should be rejected")
-	}
-}
-
 func TestParseCSV(t *testing.T) {
 	cases := map[string][]string{
 		"":                nil,
@@ -105,14 +79,5 @@ func TestBuildSystemPrompt_IncludesOnlyAllowedTools(t *testing.T) {
 	}
 	if !strings.Contains(p, `{"answer"`) {
 		t.Error("response format contract missing from prompt")
-	}
-}
-
-func TestTruncate(t *testing.T) {
-	if got := truncate("hello", 10); got != "hello" {
-		t.Errorf("short-circuit failed: %q", got)
-	}
-	if got := truncate("hello world", 5); got != "hello…" {
-		t.Errorf("truncate+ellipsis failed: %q", got)
 	}
 }

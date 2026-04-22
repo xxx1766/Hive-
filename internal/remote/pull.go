@@ -83,12 +83,39 @@ func (p *Puller) PullAgent(ctx context.Context, ref *Ref) (*image.Image, error) 
 			return nil, err
 		}
 
+	case image.KindWorkflow:
+		switch {
+		case m.Workflow != "":
+			b, err := p.fetch(ctx, ref.RawURL(m.Workflow))
+			if err != nil {
+				return nil, fmt.Errorf("fetch %s: %w", m.Workflow, err)
+			}
+			dst := filepath.Join(stage, m.Workflow)
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(dst, b, 0o644); err != nil {
+				return nil, err
+			}
+		case m.Planner != "":
+			b, err := p.fetch(ctx, ref.RawURL(m.Planner))
+			if err != nil {
+				return nil, fmt.Errorf("fetch %s: %w", m.Planner, err)
+			}
+			dst := filepath.Join(stage, m.Planner)
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(dst, b, 0o644); err != nil {
+				return nil, err
+			}
+		default:
+			return nil, fmt.Errorf("remote: kind=workflow requires workflow: or planner:")
+		}
+
 	case image.KindBinary:
 		return nil, fmt.Errorf(
-			"remote pull not supported for kind=binary — build locally or publish as kind=skill/json (see README §TODO)")
-
-	case image.KindJSON:
-		return nil, fmt.Errorf("remote pull for kind=json not yet implemented")
+			"remote pull not supported for kind=binary — build locally or publish as kind=skill/workflow (see README §TODO)")
 
 	default:
 		return nil, fmt.Errorf("unknown manifest.kind: %q", m.Kind)

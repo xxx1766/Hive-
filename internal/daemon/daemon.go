@@ -347,7 +347,7 @@ func (d *Daemon) handleAgentHire(ctx context.Context, params json.RawMessage, _ 
 	logPath := filepath.Join(ipc.RoomsDir(), p.RoomID, "logs", img.Manifest.Name+".stderr.log")
 	logFile, _ := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
 
-	preparedImg, extraEnv, err := d.prepareSkillImage(img)
+	preparedImg, extraEnv, err := d.prepareImageByKind(img)
 	if err != nil {
 		if logFile != nil {
 			_ = logFile.Close()

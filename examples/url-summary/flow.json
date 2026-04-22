@@ -1,0 +1,31 @@
+{
+  "description": "Fetch a URL and summarise its body in one sentence via llm_complete.",
+  "steps": [
+    {
+      "id": "fetch",
+      "tool": "net_fetch",
+      "args": {
+        "url": "$input.url"
+      }
+    },
+    {
+      "id": "summary",
+      "tool": "llm_complete",
+      "args": {
+        "model": "gpt-4o-mini",
+        "max_tokens": 128,
+        "messages": [
+          {
+            "role": "system",
+            "content": "Summarise the user text in ONE sentence, Chinese preferred if the content is Chinese."
+          },
+          {
+            "role": "user",
+            "content": "$steps.fetch.body"
+          }
+        ]
+      }
+    }
+  ],
+  "output": "$steps.summary.text"
+}

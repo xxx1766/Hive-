@@ -242,8 +242,8 @@ MVP 只支持"Go 编译二进制 + stdio JSON-RPC"。扩展为四种形态，用
 | kind | 是什么 | hived 怎么跑它 | 阶段 |
 |---|---|---|---|
 | `binary` | 用户自己编的可执行文件（任意语言） | 直接 exec manifest 里的 `entry` | ✅ 已实现（省略时即此默认） |
-| `skill` | 一份 `SKILL.md` + 工具声明 | `hive-skill-runner` 作为 entry，读 md → 驱动 LLM 循环 | 🧱 中期 |
-| `json` | 一份声明式 `workflow.json` | `hive-workflow-runner` 作为 entry，按 json 解释执行 | 🧱 中期 |
+| `skill` | 一份 `SKILL.md` + 工具声明 | `hive-skill-runner` 作为 entry，读 md → 驱动 LLM 循环 | ✅ 已实现 |
+| `workflow` | 静态 `flow.json` **或** LLM 规划 `PLANNER.md`（二选一） | `hive-workflow-runner` 作为 entry；静态模式直接执行；LLM 模式让 LLM 产生 workflow 再执行 | ✅ 已实现 |
 | `script` | Python / Node / Bash 脚本 | 沙箱 bind-mount 对应解释器，exec 脚本 | 🚀 v2 |
 
 **Manifest 示例**：
@@ -259,9 +259,16 @@ skill: SKILL.md
 model: gpt-4o-mini
 tools: [net, fs, peer]       # 声明允许使用的 Hive 代理
 
-# 新增：json
-kind: json
+# 新增：workflow — 静态
+kind: workflow
 workflow: flow.json
+tools: [net, llm]
+
+# 新增：workflow — LLM 规划
+kind: workflow
+planner: PLANNER.md
+model: gpt-4o-mini
+tools: [net, llm]
 
 # v2：script
 kind: script

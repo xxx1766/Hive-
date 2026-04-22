@@ -1,0 +1,13 @@
+name: research
+version: 0.1.0
+kind: workflow
+planner: PLANNER.md
+model: gpt-4o-mini
+rank: staff
+tools: [llm]
+capabilities:
+  requires: [llm]
+  provides: [research]
+quota:
+  tokens:
+    "gpt-4o-mini": 5000

@@ -1,0 +1,14 @@
+name: url-summary
+version: 0.1.0
+kind: workflow
+workflow: flow.json
+rank: staff
+tools: [net, llm]
+capabilities:
+  requires: [net, llm]
+  provides: [summarize-url]
+quota:
+  tokens:
+    "gpt-4o-mini": 2000
+  api_calls:
+    http: 10

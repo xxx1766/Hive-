@@ -23,10 +23,10 @@ const ManifestFilename = "agent.yaml"
 
 // Kind taxonomy (see ARCHITECTURE.md §"Agent 打包形态"):
 const (
-	KindBinary = "binary" // implicit default — entry is a user-built executable
-	KindSkill  = "skill"  // entry is a SKILL.md consumed by hive-skill-runner
-	KindJSON   = "json"   // declarative workflow (future)
-	KindScript = "script" // scripted runtime (future)
+	KindBinary   = "binary"   // implicit default — entry is a user-built executable
+	KindSkill    = "skill"    // entry is a SKILL.md consumed by hive-skill-runner
+	KindWorkflow = "workflow" // static flow.json OR LLM-planned, run by hive-workflow-runner
+	KindScript   = "script"   // scripted runtime (future)
 )
 
 // Manifest mirrors the on-disk agent.yaml schema.
@@ -39,10 +39,19 @@ type Manifest struct {
 	Capabilities Capabilities `yaml:"capabilities,omitempty"`
 	Quota        Quota        `yaml:"quota,omitempty"`
 
-	// Fields specific to kind=skill. Ignored otherwise.
-	Skill string   `yaml:"skill,omitempty"` // relative path to SKILL.md inside the Image
+	// Fields specific to kind=skill (ReAct LLM loop). Ignored otherwise.
+	Skill string `yaml:"skill,omitempty"` // relative path to SKILL.md inside the Image
+
+	// Fields specific to kind=workflow. Exactly one of Workflow / Planner
+	// must be set:
+	//   Workflow: path to flow.json — static, deterministic execution
+	//   Planner:  path to a prompt file — LLM produces flow.json at run time
+	Workflow string `yaml:"workflow,omitempty"`
+	Planner  string `yaml:"planner,omitempty"`
+
+	// Shared across kind=skill and kind=workflow:
 	Model string   `yaml:"model,omitempty"` // preferred LLM model; runner falls back to env / daemon default
-	Tools []string `yaml:"tools,omitempty"` // which Hive proxies the skill may call (net/fs/peer/llm)
+	Tools []string `yaml:"tools,omitempty"` // which Hive proxies the runner may dispatch to (net/fs/peer/llm)
 }
 
 type Capabilities struct {
@@ -124,10 +133,29 @@ func (m *Manifest) Validate() error {
 		if strings.Contains(m.Skill, "..") {
 			return fmt.Errorf("manifest.skill must not contain '..': %q", m.Skill)
 		}
-	case KindJSON, KindScript:
-		return fmt.Errorf("kind=%s not yet implemented — see README TODO", m.Kind)
+	case KindWorkflow:
+		// Exactly one of workflow / planner is required — the two modes
+		// are mutually exclusive in MVP (a Planner could in principle
+		// produce a workflow that then augments a base flow.json, but
+		// that's future territory).
+		hasWorkflow := m.Workflow != ""
+		hasPlanner := m.Planner != ""
+		if !hasWorkflow && !hasPlanner {
+			return fmt.Errorf("manifest: kind=workflow needs either workflow: or planner: field")
+		}
+		if hasWorkflow && hasPlanner {
+			return fmt.Errorf("manifest: kind=workflow must set workflow: OR planner:, not both")
+		}
+		if hasWorkflow && strings.Contains(m.Workflow, "..") {
+			return fmt.Errorf("manifest.workflow must not contain '..': %q", m.Workflow)
+		}
+		if hasPlanner && strings.Contains(m.Planner, "..") {
+			return fmt.Errorf("manifest.planner must not contain '..': %q", m.Planner)
+		}
+	case KindScript:
+		return fmt.Errorf("kind=script not yet implemented — see README TODO")
 	default:
-		return fmt.Errorf("unknown manifest.kind: %q (expected binary/skill/json/script)", m.Kind)
+		return fmt.Errorf("unknown manifest.kind: %q (expected binary/skill/workflow/script)", m.Kind)
 	}
 
 	if m.Rank == "" {

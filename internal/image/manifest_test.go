@@ -169,15 +169,80 @@ kind: sorcery
 	}
 }
 
-func TestLoadManifestKindJSONNotYetImplemented(t *testing.T) {
+func TestLoadManifestKindWorkflowStatic(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, filepath.Join(dir, "agent.yaml"), `
+name: w
+version: 1
+kind: workflow
+workflow: flow.json
+rank: staff
+tools: [net]
+`)
+	m, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatalf("LoadManifest: %v", err)
+	}
+	if m.Workflow != "flow.json" || m.Planner != "" {
+		t.Fatalf("bad manifest: %+v", m)
+	}
+}
+
+func TestLoadManifestKindWorkflowLLM(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, filepath.Join(dir, "agent.yaml"), `
+name: w
+version: 1
+kind: workflow
+planner: PLANNER.md
+model: gpt-4o-mini
+rank: staff
+tools: [net, fs, llm]
+`)
+	m, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatalf("LoadManifest: %v", err)
+	}
+	if m.Planner != "PLANNER.md" || m.Workflow != "" || m.Model != "gpt-4o-mini" {
+		t.Fatalf("bad manifest: %+v", m)
+	}
+}
+
+func TestLoadManifestKindWorkflowRejectsBoth(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, filepath.Join(dir, "agent.yaml"), `
+name: w
+version: 1
+kind: workflow
+workflow: flow.json
+planner: PLANNER.md
+`)
+	if _, err := LoadManifest(dir); err == nil {
+		t.Fatal("expected rejection of both workflow: and planner:")
+	}
+}
+
+func TestLoadManifestKindWorkflowRejectsNeither(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, filepath.Join(dir, "agent.yaml"), `
+name: w
+version: 1
+kind: workflow
+`)
+	if _, err := LoadManifest(dir); err == nil {
+		t.Fatal("expected rejection when neither workflow nor planner set")
+	}
+}
+
+func TestLoadManifestKindScriptNotYetImplemented(t *testing.T) {
 	dir := t.TempDir()
 	writeYAML(t, filepath.Join(dir, "agent.yaml"), `
 name: a
 version: 1
-kind: json
+kind: script
 `)
 	if _, err := LoadManifest(dir); err == nil {
-		t.Fatal("expected json not-yet-implemented rejection")
+		t.Fatal("expected script not-yet-implemented rejection")
 	}
 }
 
