@@ -137,7 +137,10 @@ func (r *Room) Member(imageName string) *Member {
 }
 
 // Hire spawns an Agent process and attaches it to this Room.
-func (r *Room) Hire(img *image.Image, rk *rank.Rank, logFile *os.File) (*Member, error) {
+// extraEnv is appended to the child process's environment. The daemon uses
+// this to pass kind-specific knobs (e.g. HIVE_SKILL_PATH for kind=skill)
+// without the room package having to know about each Agent kind.
+func (r *Room) Hire(img *image.Image, rk *rank.Rank, logFile *os.File, extraEnv ...string) (*Member, error) {
 	r.mu.Lock()
 	if _, dup := r.members[img.Manifest.Name]; dup {
 		r.mu.Unlock()
@@ -149,10 +152,12 @@ func (r *Room) Hire(img *image.Image, rk *rank.Rank, logFile *os.File) (*Member,
 	if err != nil {
 		return nil, fmt.Errorf("build sandbox cmd: %w", err)
 	}
-	cmd.Env = append(os.Environ(),
+	env := append(os.Environ(),
 		"HIVE_ROOM_ID="+r.ID,
 		"HIVE_AGENT_IMAGE="+img.Manifest.Name,
 	)
+	env = append(env, extraEnv...)
+	cmd.Env = env
 	if logFile != nil {
 		cmd.Stderr = logFile
 	} else {

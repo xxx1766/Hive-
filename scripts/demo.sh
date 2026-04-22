@@ -38,18 +38,19 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 ./bin/hive ping
 
-say "4/8 build three Agent images"
+say "4/9 build four Agent images (3 binary + 1 skill)"
 ./bin/hive build ./examples/fetch     | sed 's/^/  /'
 ./bin/hive build ./examples/upper     | sed 's/^/  /'
 ./bin/hive build ./examples/summarize | sed 's/^/  /'
+./bin/hive build ./examples/brief     | sed 's/^/  /'
 
-say "5/8 up two Rooms with the same three Agents (namespace-isolated)"
+say "5/9 up two Rooms with the same three Agents (namespace-isolated)"
 ROOM_A=$(./bin/hive up hivefiles/demo/room-a.yaml)
 ROOM_B=$(./bin/hive up hivefiles/demo/room-b.yaml)
 echo "   ROOM_A=$ROOM_A"
 echo "   ROOM_B=$ROOM_B"
 
-say "6/8 Room A: consume fetch quota (intern has 5 http calls)"
+say "6/9 Room A: consume fetch quota (intern has 5 http calls)"
 for i in 1 2 3 4 5; do
     echo "   fetch #$i:"
     ./bin/hive run "$ROOM_A" --target fetch '{"url":"http://127.0.0.1:8991/"}' | \
@@ -66,7 +67,7 @@ else
     echo "   ✗ unexpected: $out"
 fi
 
-say "7/8 Room B: one fetch succeeds (independent quota)"
+say "7/9 Room B: one fetch succeeds (independent quota)"
 ./bin/hive run "$ROOM_B" --target fetch '{"url":"http://127.0.0.1:8991/"}' | \
     grep -E 'output:|INFO' | head -3 | sed 's/^/  /'
 
@@ -76,7 +77,15 @@ say "   summarize in both Rooms (deducts tokens independently)"
 ./bin/hive run "$ROOM_B" --target summarize '{"text":"machine learning is a subset of artificial intelligence"}' | \
     grep -E 'output:|INFO' | head -5 | sed 's/^/  B: /'
 
-say "8/8 team snapshots: observe per-Room quota divergence"
+say "8/9 kind=skill Agent: a SKILL.md Agent runs via the built-in runner"
+ROOM_C=$(./bin/hive init skill-demo)
+./bin/hive hire "$ROOM_C" brief:0.1.0 >/dev/null
+echo "   Room $ROOM_C hired brief:0.1.0 (kind=skill, SKILL.md driven)"
+./bin/hive run "$ROOM_C" '{"text":"Hive 是一套面向多 Agent AI 的能力级虚拟化系统，类比 Docker for Agents，让专家 Agent 可以独立打包、分发、配额管控。"}' | \
+    grep -E 'output:|INFO' | head -5 | sed 's/^/  brief: /'
+./bin/hive stop "$ROOM_C" >/dev/null
+
+say "9/9 team snapshots: observe per-Room quota divergence"
 printf "  \033[1mRoom A:\033[0m\n"
 ./bin/hive team "$ROOM_A" | sed 's/^/    /'
 printf "\n  \033[1mRoom B:\033[0m\n"

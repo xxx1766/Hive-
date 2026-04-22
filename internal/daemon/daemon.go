@@ -322,7 +322,14 @@ func (d *Daemon) handleAgentHire(ctx context.Context, params json.RawMessage, _ 
 	logPath := filepath.Join(ipc.RoomsDir(), p.RoomID, "logs", img.Manifest.Name+".stderr.log")
 	logFile, _ := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
 
-	m, err := r.Hire(img, rk, logFile)
+	preparedImg, extraEnv, err := d.prepareSkillImage(img)
+	if err != nil {
+		if logFile != nil {
+			_ = logFile.Close()
+		}
+		return nil, protocol.NewError(protocol.ErrCodeInternal, err.Error())
+	}
+	m, err := r.Hire(preparedImg, rk, logFile, extraEnv...)
 	if err != nil {
 		if logFile != nil {
 			_ = logFile.Close()

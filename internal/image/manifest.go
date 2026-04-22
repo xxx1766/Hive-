@@ -21,14 +21,28 @@ import (
 // ManifestFilename is the required filename at the root of an Image.
 const ManifestFilename = "hive.yaml"
 
+// Kind taxonomy (see ARCHITECTURE.md §"Agent 打包形态"):
+const (
+	KindBinary = "binary" // implicit default — entry is a user-built executable
+	KindSkill  = "skill"  // entry is a SKILL.md consumed by hive-skill-runner
+	KindJSON   = "json"   // declarative workflow (future)
+	KindScript = "script" // scripted runtime (future)
+)
+
 // Manifest mirrors the on-disk hive.yaml schema.
 type Manifest struct {
 	Name         string       `yaml:"name"`
 	Version      string       `yaml:"version"`
-	Entry        string       `yaml:"entry"` // relative path inside the Image
-	Rank         string       `yaml:"rank"`  // default Rank (may be overridden at hire time)
+	Kind         string       `yaml:"kind,omitempty"`  // binary / skill / json / script — defaults to binary
+	Entry        string       `yaml:"entry,omitempty"` // required for kind=binary
+	Rank         string       `yaml:"rank"`            // default Rank (may be overridden at hire time)
 	Capabilities Capabilities `yaml:"capabilities,omitempty"`
 	Quota        Quota        `yaml:"quota,omitempty"`
+
+	// Fields specific to kind=skill. Ignored otherwise.
+	Skill string   `yaml:"skill,omitempty"` // relative path to SKILL.md inside the Image
+	Model string   `yaml:"model,omitempty"` // preferred LLM model; runner falls back to env / daemon default
+	Tools []string `yaml:"tools,omitempty"` // which Hive proxies the skill may call (net/fs/peer/llm)
 }
 
 type Capabilities struct {
@@ -91,12 +105,31 @@ func (m *Manifest) Validate() error {
 	if m.Version == "" {
 		return fmt.Errorf("manifest.version is required")
 	}
-	if m.Entry == "" {
-		return fmt.Errorf("manifest.entry is required")
+	if m.Kind == "" {
+		m.Kind = KindBinary
 	}
-	if strings.Contains(m.Entry, "..") {
-		return fmt.Errorf("manifest.entry must not contain '..': %q", m.Entry)
+
+	switch m.Kind {
+	case KindBinary:
+		if m.Entry == "" {
+			return fmt.Errorf("manifest.entry is required for kind=binary")
+		}
+		if strings.Contains(m.Entry, "..") {
+			return fmt.Errorf("manifest.entry must not contain '..': %q", m.Entry)
+		}
+	case KindSkill:
+		if m.Skill == "" {
+			return fmt.Errorf("manifest.skill is required for kind=skill")
+		}
+		if strings.Contains(m.Skill, "..") {
+			return fmt.Errorf("manifest.skill must not contain '..': %q", m.Skill)
+		}
+	case KindJSON, KindScript:
+		return fmt.Errorf("kind=%s not yet implemented — see README TODO", m.Kind)
+	default:
+		return fmt.Errorf("unknown manifest.kind: %q (expected binary/skill/json/script)", m.Kind)
 	}
+
 	if m.Rank == "" {
 		m.Rank = "intern" // safe default: lowest privilege
 	}
@@ -116,4 +149,6 @@ func Load(dir string) (*Image, error) {
 func (i *Image) Ref() Ref { return Ref{Name: i.Manifest.Name, Version: i.Manifest.Version} }
 
 // EntryPath is the absolute path of the entry binary.
+// Only meaningful for kind=binary; skill/json/script entries are resolved
+// by the daemon (which injects a built-in runner as entry at hire time).
 func (i *Image) EntryPath() string { return filepath.Join(i.Dir, i.Manifest.Entry) }

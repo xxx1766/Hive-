@@ -126,6 +126,35 @@ capabilities:
 
 别的语言（Python / Rust / TS / …）直接按 JSON-RPC 2.0 读写 stdin/stdout 即可 —— wire 协议语言无关。
 
+### 不写代码：`kind: skill` Agent
+
+Agent 也可以**只写一份 markdown**，Hive 用内置 `hive-skill-runner` 驱动 LLM 把它跑起来。适合快速 prototype 或轻量任务。参考 `examples/brief/`：
+
+```
+examples/brief/
+├── hive.yaml       # manifest (kind: skill)
+└── SKILL.md        # Agent 的"灵魂"
+```
+
+```yaml
+# hive.yaml
+name: brief
+version: 0.1.0
+kind: skill
+skill: SKILL.md
+model: gpt-4o-mini
+tools: [net, fs]       # 允许 skill 调用哪些 Hive proxy
+rank: staff
+```
+
+```markdown
+# SKILL.md
+你是一个摘要助手。收到 {"text": ...} 就用一句话总结。
+严格按 Hive runtime 约定返回 JSON：{"answer": "..."}。
+```
+
+hived 在 hire 时把 hive-skill-runner **hardlink 到 Image 目录**，作为 entry 送进沙箱 —— 对 daemon 而言它仍只是一个普通 Agent 子进程，同样的 namespace / Rank / 配额。runner 内部读 SKILL.md 当 system prompt，驱动一个最多 20 轮的 LLM 循环（ReAct-lite JSON 协议：`{"tool": "...", "args": {...}}` 或 `{"answer": "..."}`）。
+
 ### Agent ↔ Hive 方法集
 
 | 方向 | Method | 说明 |
@@ -190,7 +219,8 @@ Hivefile / `hive hire --rank` 可覆盖默认 Rank。权限和配额由 `hived` 
 ```
 cmd/                      CLI + daemon 入口
 ├── hive/                 hive CLI
-└── hived/                hived daemon
+├── hived/                hived daemon
+└── hive-skill-runner/    内置 runner (kind=skill Agent 的 entry binary)
 
 internal/
 ├── protocol/             JSON-RPC 2.0 + NDJSON wire
@@ -217,7 +247,8 @@ examples/
 ├── echo/                 最小 Agent，raw JSON-RPC
 ├── fetch/                intern rank，演示 net/fetch + API 配额
 ├── upper/                staff rank，纯本地 + peer 消息
-└── summarize/            staff rank，演示 llm/complete + token 配额
+├── summarize/            staff rank，演示 llm/complete + token 配额
+└── brief/                staff rank，kind: skill —— 只有 SKILL.md + hive.yaml
 
 hivefiles/demo/           demo 用的两份 Hivefile
 scripts/demo.sh           一键端到端演示
@@ -267,8 +298,8 @@ make demo           # 端到端 smoke（需要 root）
 
 - [ ] **`mcp/call` proxy**：Hive 作为 MCP 客户端调外部 MCP server。新建 `internal/proxy/mcpproxy/`，支持 stdio + HTTP 两种 transport；Rank 加 `MCPAllowed` 字段；配额 key `api_calls:mcp:<server>`。
 - [ ] **`ai_tool/invoke` proxy**：Agent 通过 `exec` 方式调 Claude Code CLI / Cursor CLI。新建 `internal/proxy/aitoolproxy/`；Rank 加 `AIToolAllowed`；配额 key `api_calls:ai_tool:<name>`；注意会话/上下文持久化语义。
-- [ ] **`manifest.kind` 字段**：`internal/image/manifest.go` 加 `Kind` 字段（默认 `binary`）；`internal/daemon/daemon.go:handleAgentHire` 按 `Kind` 派发 entry 解析。
-- [ ] **`kind: skill` Agent 形态**：新增 `cmd/hive-skill-runner/main.go` —— 读 `SKILL.md` 当 system prompt、驱动 LLM 循环、把工具调用转发到 Hive 代理；Hivefile 支持 `skill:` / `model:` / `tools:` 字段。
+- [x] ~~**`manifest.kind` 字段**~~ —— 已完成：`internal/image/manifest.go` 加了 `Kind` / `Skill` / `Model` / `Tools` 字段；`internal/daemon/daemon.go:handleAgentHire` 检测 Kind 并走 `prepareSkillImage` 分支。
+- [x] ~~**`kind: skill` Agent 形态**~~ —— 已完成：`cmd/hive-skill-runner/` 二进制 + ReAct-lite JSON 循环；`examples/brief/` 作为参考 skill Agent。
 - [ ] **`kind: json` Agent 形态**：新增 `cmd/hive-workflow-runner/main.go` —— 解释声明式 workflow（step / action / next）；不依赖 LLM，给硬编码流程用。
 
 ### 🚀 v2（`DEMO_PLAN.md` 里明确列为"不做"的大特性）

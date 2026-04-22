@@ -93,6 +93,94 @@ entry: ../../../etc/passwd
 	}
 }
 
+func TestLoadManifestDefaultsKindBinary(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, filepath.Join(dir, "hive.yaml"), `
+name: a
+version: 1
+entry: bin/a
+`)
+	m, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatalf("LoadManifest: %v", err)
+	}
+	if m.Kind != KindBinary {
+		t.Fatalf("kind default: got %q want %q", m.Kind, KindBinary)
+	}
+}
+
+func TestLoadManifestKindSkillRequiresSkillField(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, filepath.Join(dir, "hive.yaml"), `
+name: a
+version: 1
+kind: skill
+`)
+	if _, err := LoadManifest(dir); err == nil {
+		t.Fatal("expected rejection when kind=skill but no skill field")
+	}
+}
+
+func TestLoadManifestKindSkillHappy(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, filepath.Join(dir, "hive.yaml"), `
+name: brief
+version: 0.1.0
+kind: skill
+skill: SKILL.md
+model: gpt-4o-mini
+tools: [net, fs]
+rank: staff
+`)
+	m, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatalf("LoadManifest: %v", err)
+	}
+	if m.Kind != KindSkill || m.Skill != "SKILL.md" || m.Model != "gpt-4o-mini" {
+		t.Fatalf("unexpected manifest: %+v", m)
+	}
+	if len(m.Tools) != 2 {
+		t.Fatalf("tools parse: %+v", m.Tools)
+	}
+}
+
+func TestLoadManifestKindSkillRejectsDotDot(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, filepath.Join(dir, "hive.yaml"), `
+name: bad
+version: 1
+kind: skill
+skill: ../../etc/shadow
+`)
+	if _, err := LoadManifest(dir); err == nil {
+		t.Fatal("expected path-escape rejection")
+	}
+}
+
+func TestLoadManifestUnknownKind(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, filepath.Join(dir, "hive.yaml"), `
+name: a
+version: 1
+kind: sorcery
+`)
+	if _, err := LoadManifest(dir); err == nil {
+		t.Fatal("expected unknown-kind rejection")
+	}
+}
+
+func TestLoadManifestKindJSONNotYetImplemented(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, filepath.Join(dir, "hive.yaml"), `
+name: a
+version: 1
+kind: json
+`)
+	if _, err := LoadManifest(dir); err == nil {
+		t.Fatal("expected json not-yet-implemented rejection")
+	}
+}
+
 func writeYAML(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
