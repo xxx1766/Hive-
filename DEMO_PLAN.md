@@ -263,3 +263,12 @@ hived stop-room    room=<id>
 ---
 
 **下一步：** 这份 plan 确认后，按 M1 → M5 顺序推进。我会为每个里程碑建一批 TaskCreate 子任务，落到实现时再细化。
+
+---
+
+**MVP 完成之后的架构演进** —— 本 demo plan 故意没覆盖、已单独归档到 `ARCHITECTURE.md` §"架构扩展方向"：
+
+- Hive 与外部 AI 工具（Claude Code / Cursor / MCP / LLM）的依赖方向 —— 决策：**Hive 在上，AI 工具当后端**；新增 `mcpproxy` / `aitoolproxy` 两类代理
+- Agent 打包多态（`manifest.kind` 字段）—— 新增 `skill` / `json` 两种形态，配套 `hive-skill-runner` / `hive-workflow-runner` 子系统
+
+对应的 backlog 条目见 `README.md` §"🧱 中期" 与 §"🚀 v2"。

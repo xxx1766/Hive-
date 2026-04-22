@@ -198,6 +198,90 @@ Rank 对应操作系统的 Cgroups + 访问控制，但基于 AI Agent 场景做
 
 ---
 
+## 架构扩展方向
+
+MVP 跑通之后，有两个面向未来的架构决策已经敲定（落成 ADR 给后续实现），但实现本身还在 TODO 里。这里记在架构文档是因为这两件事影响产品定位，不是普通特性。
+
+### 与外部 AI 工具（Claude Code / Cursor / MCP / LLM）的关系
+
+**依赖方向**：Hive 始终在上，外部 AI 工具当**算力后端**。用户入口永远是 `hive` CLI；Agent 通过 Hive 的 proxy 层调外部 AI 工具。**反方向**（把 Hive 作为 Claude Code 的插件 / MCP server 让宿主 AI 工具来调）**不是第一阶段目标**。
+
+```
+┌──────────────────────── hived ────────────────────────┐
+│  User ─▶ hive CLI ─▶ dispatcher ─▶ Room ─▶ Agent       │
+│                                              │         │
+│                                              ▼         │
+│   ┌──────────────────────────────────────────────┐     │
+│   │  llmproxy   mcpproxy   aitoolproxy  netproxy │     │
+│   │  (直调 LLM) (MCP srv)  (CLI 工具)    (HTTP)   │     │
+│   └──────────────────────────────────────────────┘     │
+│        │           │              │            │      │
+└────────┼───────────┼──────────────┼────────────┼──────┘
+         ▼           ▼              ▼            ▼
+   OpenAI /     MCP server    Claude Code /   任意外部
+   Anthropic    (stdio/HTTP)  Cursor CLI      SaaS API
+```
+
+**四类后端的统一处理**
+
+| 后端 | proxy | 传输 | Rank 控制位 | 配额 key |
+|---|---|---|---|---|
+| 直调 LLM（OpenAI / Anthropic / Groq …） | `llmproxy` | HTTP | `LLMAllowed`（已实现） | `tokens:<model>` |
+| MCP server | `mcpproxy`（待建） | stdio / HTTP | `MCPAllowed`（待加） | `api_calls:mcp:<server>` |
+| CLI 类 AI 工具（Claude Code / Cursor） | `aitoolproxy`（待建） | exec 子进程 | `AIToolAllowed`（待加） | `api_calls:ai_tool:<name>` |
+| 普通 SaaS API（兜底） | `netproxy` | HTTP | `NetAllowed`（已实现） | `api_calls:http` |
+
+**不变量**（与前文"共享连接 vs 隔离配额"同条）：同一后端的连接 / 会话在 proxy 内进程级复用；配额按 `(Room, Agent, 资源)` 三元组独立计数。新增的 proxy 也必须落在这两条轨道里。
+
+### Agent 打包形态（`manifest.kind` 字段）
+
+MVP 只支持"Go 编译二进制 + stdio JSON-RPC"。扩展为四种形态，用 manifest 的 `kind` 字段显式区分：
+
+| kind | 是什么 | hived 怎么跑它 | 阶段 |
+|---|---|---|---|
+| `binary` | 用户自己编的可执行文件（任意语言） | 直接 exec manifest 里的 `entry` | ✅ 已实现（省略时即此默认） |
+| `skill` | 一份 `SKILL.md` + 工具声明 | `hive-skill-runner` 作为 entry，读 md → 驱动 LLM 循环 | 🧱 中期 |
+| `json` | 一份声明式 `workflow.json` | `hive-workflow-runner` 作为 entry，按 json 解释执行 | 🧱 中期 |
+| `script` | Python / Node / Bash 脚本 | 沙箱 bind-mount 对应解释器，exec 脚本 | 🚀 v2 |
+
+**Manifest 示例**：
+
+```yaml
+# 现有（省略 kind 即为 binary）
+kind: binary
+entry: bin/fetch
+
+# 新增：skill
+kind: skill
+skill: SKILL.md
+model: gpt-4o-mini
+tools: [net, fs, peer]       # 声明允许使用的 Hive 代理
+
+# 新增：json
+kind: json
+workflow: flow.json
+
+# v2：script
+kind: script
+runtime: python@3.11
+entry: main.py
+deps: requirements.txt
+```
+
+**skill-runner 子系统**
+
+`cmd/hive-skill-runner/main.go` 是 Hive 编出的第三个二进制（与 `hive` / `hived` 并列）—— 作为 `kind: skill` Agent 的实际执行体：
+
+- daemon 检测到 `kind: skill` 时，把 `hive-skill-runner` 当成 entry 传给 `ns.NewAgentCommand`
+- runner 在沙箱内跑，通过 stdio JSON-RPC 连回 daemon —— **和普通 Agent 一模一样**
+- 内部循环：SKILL.md 作为 system prompt → `llm/complete` → 解析 LLM 返回的工具调用 → 转发到 `net/fetch` / `fs/read` / `peer/send` 等代理 → 结果回填给 LLM → 直到 LLM 决定 `task/done`
+
+**关键设计点**：runner 虽然 Hive 自带，但对 hived 来说它仍然只是一个普通 Agent 子进程 —— 同样的 namespace 沙箱、同样的 Rank、同样的配额扣减。sandbox 隔离不因内置而弱化；第三方也可以写自己的 runner 替代。
+
+**向后兼容**：`kind` 省略时默认 `binary`，现有 Image 无需改动。
+
+---
+
 ## 完整工作流示例
 
 ### 场景：我要写一篇关于 LLM 蒸馏的调研论文

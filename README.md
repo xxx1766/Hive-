@@ -263,6 +263,14 @@ make demo           # 端到端 smoke（需要 root）
 - [ ] **`lo` 接口补齐**：`CLONE_NEWNET` 默认 loopback 是 down 的，有些 Agent 内部库会意外失败。init 阶段 `ip link set lo up` 一下（或 Go 语言版的 netlink）。
 - [ ] **Agent 输出压缩/分片**：`fs/read` 大文件目前整包 base64 JSON 回传，无流式。加 `fs/read-stream` 或 chunked 语义。
 
+新增（来自 `ARCHITECTURE.md` §"架构扩展方向"）：
+
+- [ ] **`mcp/call` proxy**：Hive 作为 MCP 客户端调外部 MCP server。新建 `internal/proxy/mcpproxy/`，支持 stdio + HTTP 两种 transport；Rank 加 `MCPAllowed` 字段；配额 key `api_calls:mcp:<server>`。
+- [ ] **`ai_tool/invoke` proxy**：Agent 通过 `exec` 方式调 Claude Code CLI / Cursor CLI。新建 `internal/proxy/aitoolproxy/`；Rank 加 `AIToolAllowed`；配额 key `api_calls:ai_tool:<name>`；注意会话/上下文持久化语义。
+- [ ] **`manifest.kind` 字段**：`internal/image/manifest.go` 加 `Kind` 字段（默认 `binary`）；`internal/daemon/daemon.go:handleAgentHire` 按 `Kind` 派发 entry 解析。
+- [ ] **`kind: skill` Agent 形态**：新增 `cmd/hive-skill-runner/main.go` —— 读 `SKILL.md` 当 system prompt、驱动 LLM 循环、把工具调用转发到 Hive 代理；Hivefile 支持 `skill:` / `model:` / `tools:` 字段。
+- [ ] **`kind: json` Agent 形态**：新增 `cmd/hive-workflow-runner/main.go` —— 解释声明式 workflow（step / action / next）；不依赖 LLM，给硬编码流程用。
+
 ### 🚀 v2（`DEMO_PLAN.md` 里明确列为"不做"的大特性）
 
 - [ ] **seccomp-bpf syscall 白名单**：生产级沙箱补强，防止内核漏洞提权。
@@ -273,6 +281,7 @@ make demo           # 端到端 smoke（需要 root）
 - [ ] **跨主机 / 多 daemon 集群**：一个 CLI 连多台机器的 hived（类似 docker swarm）。
 - [ ] **非 Linux 支持**：macOS（用 macOS Virtualization.framework？）/ Windows（WSL2？）。
 - [ ] **Hivefile 嵌套**：一个 Hive 可以 hire 另一个 Hive（函数调用式）。
+- [ ] **`kind: script` Agent 形态**（Python / Node / Bash）：涉及解释器依赖管理 —— venv / node_modules 谁维护、Image 体积、解释器 bind-mount 策略。
 
 ### 📚 文档
 
