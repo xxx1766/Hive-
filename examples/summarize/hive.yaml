@@ -1,0 +1,10 @@
+name: summarize
+version: 0.1.0
+entry: bin/summarize
+rank: staff
+capabilities:
+  requires: [llm]
+  provides: [summarize]
+quota:
+  tokens:
+    "gpt-4o-mini": 5000

@@ -1,0 +1,6 @@
+name: upper
+version: 0.1.0
+entry: bin/upper
+rank: staff
+capabilities:
+  provides: [text-upper]

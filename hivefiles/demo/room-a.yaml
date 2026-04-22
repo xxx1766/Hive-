@@ -1,0 +1,9 @@
+room: demo-room-a
+entry: summarize
+agents:
+  - image: fetch:0.1.0
+    rank: intern
+  - image: upper:0.1.0
+    rank: staff
+  - image: summarize:0.1.0
+    rank: staff

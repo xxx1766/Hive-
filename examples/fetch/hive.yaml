@@ -1,0 +1,10 @@
+name: fetch
+version: 0.1.0
+entry: bin/fetch
+rank: intern
+capabilities:
+  requires: [net]
+  provides: [fetch]
+quota:
+  api_calls:
+    http: 5
