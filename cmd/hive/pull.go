@@ -13,11 +13,11 @@ import (
 // Usage: hive pull <url>
 // Equivalent to the auto-pull step of `hive hire <room> <url>`.
 func cmdPull(ctx context.Context, args []string) {
+	if maybeHandleHelpFlag("pull", args) {
+		return
+	}
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: hive pull <url>")
-		fmt.Fprintln(os.Stderr, "  <url>: github://owner/repo/path[@ref]")
-		fmt.Fprintln(os.Stderr, "       | https://github.com/owner/repo/tree/ref/path")
-		fmt.Fprintln(os.Stderr, "       | owner/repo#path[@ref]")
+		printCommandHelp("pull", os.Stderr)
 		os.Exit(2)
 	}
 	c := mustDial(ctx)

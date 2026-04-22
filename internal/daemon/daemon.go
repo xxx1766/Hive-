@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -90,6 +91,7 @@ func (d *Daemon) Register(srv *ipc.Server) {
 	srv.Handle(ipc.MethodRoomList, d.handleRoomList)
 	srv.Handle(ipc.MethodRoomStop, d.handleRoomStop)
 	srv.Handle(ipc.MethodRoomTeam, d.handleRoomTeam)
+	srv.Handle(ipc.MethodRoomLogs, d.handleRoomLogs)
 	srv.Handle(ipc.MethodAgentHire, d.handleAgentHire)
 	srv.Handle(ipc.MethodRoomRun, d.handleRoomRun)
 }
@@ -114,15 +116,14 @@ func (d *Daemon) Shutdown() {
 // Conn at hire time. Proxies enforce Rank and consume quota through the
 // single quota.Actor; connection pooling for HTTP is hidden in netproxy.
 func (d *Daemon) installAgentProxies(r *room.Room, m *room.Member) {
-	// Install manifest-default quotas. Hivefile/CLI overrides would go
-	// here too; M4 ships without overrides (default-only is already
-	// enough to demo quota isolation).
-	for k, v := range m.Rank.Quota.Tokens {
+	// Install the merged (Rank default + override) quota.
+	eff := m.EffectiveQuota()
+	for k, v := range eff.Tokens {
 		_, _ = d.quota.SetLimit(d.quotaCtx, quota.Key{
 			RoomID: r.ID, Agent: m.Image.Name, Resource: "tokens:" + k,
 		}, v)
 	}
-	for k, v := range m.Rank.Quota.APICalls {
+	for k, v := range eff.APICalls {
 		_, _ = d.quota.SetLimit(d.quotaCtx, quota.Key{
 			RoomID: r.ID, Agent: m.Image.Name, Resource: k,
 		}, v)
@@ -295,11 +296,66 @@ func (d *Daemon) handleRoomTeam(ctx context.Context, params json.RawMessage, _ i
 	return ipc.RoomTeamResult{RoomID: p.RoomID, Members: out}, nil
 }
 
+// handleRoomLogs reads the persisted per-Agent stderr log files under
+// <RoomsDir>/<roomID>/logs/ and returns their contents in one shot.
+// No tailing / follow in MVP — snapshots only.
+func (d *Daemon) handleRoomLogs(ctx context.Context, params json.RawMessage, _ ipc.NotifyFunc) (any, error) {
+	var p ipc.RoomLogsParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, protocol.NewError(protocol.ErrCodeInvalidParams, err.Error())
+	}
+	d.mu.RLock()
+	_, ok := d.rooms[p.RoomID]
+	d.mu.RUnlock()
+	if !ok {
+		// Allow logs for stopped rooms too, but only if the dir still
+		// exists on disk — Stop currently leaves them for post-mortem.
+		logsDir := filepath.Join(ipc.RoomsDir(), p.RoomID, "logs")
+		if _, err := os.Stat(logsDir); err != nil {
+			return nil, protocol.NewError(protocol.ErrCodeRoomNotFound, "room not found: "+p.RoomID)
+		}
+	}
+
+	logsDir := filepath.Join(ipc.RoomsDir(), p.RoomID, "logs")
+	entries, err := os.ReadDir(logsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ipc.RoomLogsResult{RoomID: p.RoomID}, nil
+		}
+		return nil, err
+	}
+
+	out := ipc.RoomLogsResult{RoomID: p.RoomID}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".stderr.log") {
+			continue
+		}
+		agent := strings.TrimSuffix(e.Name(), ".stderr.log")
+		if p.Agent != "" && agent != p.Agent {
+			continue
+		}
+		path := filepath.Join(logsDir, e.Name())
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			contents = []byte(fmt.Sprintf("(read error: %v)", err))
+		}
+		out.Entries = append(out.Entries, ipc.RoomLogEntry{
+			Agent: agent, Path: path, Contents: string(contents),
+		})
+	}
+	if p.Agent != "" && len(out.Entries) == 0 {
+		return nil, protocol.NewError(protocol.ErrCodeAgentNotFound,
+			fmt.Sprintf("no log for agent %q in room %s", p.Agent, p.RoomID))
+	}
+	return out, nil
+}
+
 // remainingQuota produces a display-only snapshot of what's left per resource.
 // Unlimited resources are omitted; shows {resource: remaining} as ints.
 func (d *Daemon) remainingQuota(roomID string, m *room.Member) map[string]any {
 	out := map[string]any{}
-	for k := range m.Rank.Quota.Tokens {
+	eff := m.EffectiveQuota()
+	for k := range eff.Tokens {
 		res, err := d.quota.Remaining(d.quotaCtx, quota.Key{
 			RoomID: roomID, Agent: m.Image.Name, Resource: "tokens:" + k,
 		})
@@ -307,7 +363,7 @@ func (d *Daemon) remainingQuota(roomID string, m *room.Member) map[string]any {
 			out["tokens:"+k] = res.Remaining
 		}
 	}
-	for k := range m.Rank.Quota.APICalls {
+	for k := range eff.APICalls {
 		res, err := d.quota.Remaining(d.quotaCtx, quota.Key{
 			RoomID: roomID, Agent: m.Image.Name, Resource: k,
 		})
@@ -343,6 +399,17 @@ func (d *Daemon) handleAgentHire(ctx context.Context, params json.RawMessage, _ 
 	if err != nil {
 		return nil, protocol.NewError(protocol.ErrCodeRankViolation, err.Error())
 	}
+
+	// Capability pre-flight: requires[] from manifest must each be in rk.Capabilities().
+	// Surfaces "rank intern doesn't grant llm" at hire time instead of the first
+	// llm/complete call inside a task.
+	for _, req := range img.Manifest.Capabilities.Requires {
+		if !rk.HasCapability(req) {
+			return nil, protocol.NewError(protocol.ErrCodeRankViolation,
+				fmt.Sprintf("rank %q does not grant required capability %q (manifest requires: %v)",
+					rk.Name, req, img.Manifest.Capabilities.Requires))
+		}
+	}
 	// Per-agent stderr log for easier debugging.
 	logPath := filepath.Join(ipc.RoomsDir(), p.RoomID, "logs", img.Manifest.Name+".stderr.log")
 	logFile, _ := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
@@ -354,7 +421,25 @@ func (d *Daemon) handleAgentHire(ctx context.Context, params json.RawMessage, _ 
 		}
 		return nil, protocol.NewError(protocol.ErrCodeInternal, err.Error())
 	}
-	m, err := r.Hire(preparedImg, rk, logFile, extraEnv...)
+
+	// Parse the Hivefile / CLI quota override, if present.
+	var quotaOverride *rank.Quota
+	if len(p.QuotaOverr) > 0 && string(p.QuotaOverr) != "null" {
+		var ov ipc.QuotaOverride
+		if err := json.Unmarshal(p.QuotaOverr, &ov); err != nil {
+			return nil, protocol.NewError(protocol.ErrCodeInvalidParams,
+				fmt.Sprintf("parse quota override: %v", err))
+		}
+		q := rank.Quota{Tokens: ov.Tokens, APICalls: ov.APICalls}
+		quotaOverride = &q
+	}
+
+	m, err := r.Hire(preparedImg, room.HireOpts{
+		Rank:          rk,
+		QuotaOverride: quotaOverride,
+		LogFile:       logFile,
+		ExtraEnv:      extraEnv,
+	})
 	if err != nil {
 		if logFile != nil {
 			_ = logFile.Close()

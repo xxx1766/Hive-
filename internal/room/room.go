@@ -37,8 +37,38 @@ const (
 type Member struct {
 	Image   image.Ref
 	Rank    *rank.Rank
-	Conn    *agent.Conn
-	HiredAt time.Time
+	// QuotaOverride is set when Hivefile / CLI overrides the Rank's default
+	// quota for this specific hire. nil ⇒ use Rank.Quota unchanged.
+	QuotaOverride *rank.Quota
+	Conn          *agent.Conn
+	HiredAt       time.Time
+}
+
+// EffectiveQuota merges the Rank's default quota with any per-hire override.
+// Override keys replace base values; base keys absent from the override are
+// preserved. Both buckets (Tokens, APICalls) are merged independently.
+func (m *Member) EffectiveQuota() rank.Quota {
+	base := m.Rank.Quota
+	if m.QuotaOverride == nil {
+		return base
+	}
+	out := rank.Quota{
+		Tokens:   make(map[string]int, len(base.Tokens)),
+		APICalls: make(map[string]int, len(base.APICalls)),
+	}
+	for k, v := range base.Tokens {
+		out.Tokens[k] = v
+	}
+	for k, v := range base.APICalls {
+		out.APICalls[k] = v
+	}
+	for k, v := range m.QuotaOverride.Tokens {
+		out.Tokens[k] = v
+	}
+	for k, v := range m.QuotaOverride.APICalls {
+		out.APICalls[k] = v
+	}
+	return out
 }
 
 // Room is the unit of isolation. One Go routine owns the Router; all
@@ -136,11 +166,24 @@ func (r *Room) Member(imageName string) *Member {
 	return r.members[imageName]
 }
 
+// HireOpts carries all the per-hire knobs that grew past what fits in
+// positional args. Future knobs (attach policy, resource class, ...) go here.
+type HireOpts struct {
+	Rank          *rank.Rank
+	QuotaOverride *rank.Quota // nil means "use Rank.Quota defaults"
+	LogFile       *os.File
+	ExtraEnv      []string
+}
+
 // Hire spawns an Agent process and attaches it to this Room.
-// extraEnv is appended to the child process's environment. The daemon uses
-// this to pass kind-specific knobs (e.g. HIVE_SKILL_PATH for kind=skill)
-// without the room package having to know about each Agent kind.
-func (r *Room) Hire(img *image.Image, rk *rank.Rank, logFile *os.File, extraEnv ...string) (*Member, error) {
+// extraEnv (via opts.ExtraEnv) is appended to the child process's
+// environment — the daemon uses this to pass kind-specific knobs
+// (HIVE_SKILL_PATH, HIVE_WORKFLOW_PATH, …) without the room package
+// having to know about each Agent kind.
+func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
+	rk := opts.Rank
+	logFile := opts.LogFile
+	extraEnv := opts.ExtraEnv
 	r.mu.Lock()
 	if _, dup := r.members[img.Manifest.Name]; dup {
 		r.mu.Unlock()
@@ -167,10 +210,11 @@ func (r *Room) Hire(img *image.Image, rk *rank.Rank, logFile *os.File, extraEnv 
 	conn := agent.New(img.Manifest.Name, cmd)
 
 	member := &Member{
-		Image:   img.Ref(),
-		Rank:    rk,
-		Conn:    conn,
-		HiredAt: time.Now(),
+		Image:         img.Ref(),
+		Rank:          rk,
+		QuotaOverride: opts.QuotaOverride,
+		Conn:          conn,
+		HiredAt:       time.Now(),
 	}
 
 	// Hooks install handlers BEFORE Start so the Agent can't race past them.

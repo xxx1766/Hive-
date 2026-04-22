@@ -95,7 +95,16 @@ type AgentHireParams struct {
 	RoomID     string          `json:"room_id"`
 	Image      ImageRef        `json:"image"`
 	RankName   string          `json:"rank,omitempty"`  // override manifest default
-	QuotaOverr json.RawMessage `json:"quota,omitempty"` // override manifest quota (partial)
+	QuotaOverr json.RawMessage `json:"quota,omitempty"` // override manifest quota (partial); shape = QuotaOverride
+}
+
+// QuotaOverride mirrors the manifest's quota shape. Unmarshalled by the
+// daemon from AgentHireParams.QuotaOverr and merged on top of the Rank's
+// defaults — partial (key-wise) overrides are the rule, full replacement
+// is expressed by setting every key.
+type QuotaOverride struct {
+	Tokens   map[string]int `json:"tokens,omitempty"`
+	APICalls map[string]int `json:"api_calls,omitempty"`
 }
 
 type AgentHireResult struct {
@@ -112,6 +121,28 @@ type RoomRunParams struct {
 
 type RoomRunResult struct {
 	Output json.RawMessage `json:"output,omitempty"`
+}
+
+// ── Room logs (offline tail) ──────────────────────────────────────────────
+
+// RoomLogsParams asks for the persisted Agent stderr logs of a Room.
+// Empty Agent means "all Agents in the Room".
+type RoomLogsParams struct {
+	RoomID string `json:"room_id"`
+	Agent  string `json:"agent,omitempty"`
+}
+
+// RoomLogEntry is one Agent's stderr snapshot.
+type RoomLogEntry struct {
+	Agent    string `json:"agent"`
+	Path     string `json:"path"`
+	Contents string `json:"contents"`
+}
+
+// RoomLogsResult bundles all requested log entries.
+type RoomLogsResult struct {
+	RoomID  string         `json:"room_id"`
+	Entries []RoomLogEntry `json:"entries"`
 }
 
 // RoomLogNotification is the payload of NotifyRoomLog.

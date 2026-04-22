@@ -57,6 +57,39 @@ func (r *Rank) AllowRead(absPath string) bool { return hasPrefix(r.FSRead, absPa
 // AllowWrite reports whether the Rank permits writing absPath.
 func (r *Rank) AllowWrite(absPath string) bool { return hasPrefix(r.FSWrite, absPath) }
 
+// Capabilities returns the Hive-defined capability tokens this Rank
+// effectively grants. These are the vocabulary for manifest.capabilities
+// (requires/provides). An Agent whose manifest.capabilities.requires
+// contains a token NOT in the Rank's set is rejected at hire time.
+//
+// Current vocabulary:
+//   "net" — Rank.NetAllowed
+//   "llm" — Rank.LLMAllowed
+//   "fs"  — Rank has at least one FS read OR write prefix
+func (r *Rank) Capabilities() []string {
+	var caps []string
+	if r.NetAllowed {
+		caps = append(caps, "net")
+	}
+	if r.LLMAllowed {
+		caps = append(caps, "llm")
+	}
+	if len(r.FSRead) > 0 || len(r.FSWrite) > 0 {
+		caps = append(caps, "fs")
+	}
+	return caps
+}
+
+// HasCapability reports whether the Rank grants the given capability token.
+func (r *Rank) HasCapability(cap string) bool {
+	for _, c := range r.Capabilities() {
+		if c == cap {
+			return true
+		}
+	}
+	return false
+}
+
 func hasPrefix(prefixes []string, p string) bool {
 	for _, pref := range prefixes {
 		if pref == "/" {

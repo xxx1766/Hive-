@@ -27,6 +27,8 @@ func dispatchCmd(ctx context.Context, cmd string, args []string) bool {
 		cmdUp(ctx, args)
 	case "pull":
 		cmdPull(ctx, args)
+	case "logs":
+		cmdLogs(ctx, args)
 	default:
 		return false
 	}

@@ -11,8 +11,11 @@ import (
 )
 
 func cmdRun(ctx context.Context, args []string) {
+	if maybeHandleHelpFlag("run", args) {
+		return
+	}
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: hive run <room> [--target <image>] [task-json]")
+		printCommandHelp("run", os.Stderr)
 		os.Exit(2)
 	}
 	roomID := args[0]

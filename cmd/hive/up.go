@@ -23,8 +23,11 @@ import (
 // field can likewise be local (name:version) or remote — remote ones
 // are pulled via the daemon's image/pull before hire.
 func cmdUp(ctx context.Context, args []string) {
+	if maybeHandleHelpFlag("up", args) {
+		return
+	}
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: hive up <hivefile-or-url>")
+		printCommandHelp("up", os.Stderr)
 		os.Exit(2)
 	}
 	src := args[0]
@@ -68,10 +71,25 @@ func cmdUp(ctx context.Context, args []string) {
 			os.Exit(1)
 		}
 		ref, _ := image.ParseRef(localRef)
+
+		// If the Hivefile entry set `quota:`, serialise it through to the
+		// daemon as an override on the Rank default. Partial overrides
+		// are the norm — unset keys inherit from the Rank.
+		var quotaRaw json.RawMessage
+		if len(a.Quota) > 0 {
+			b, err := json.Marshal(a.Quota)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "up/quota %s: %v\n", a.Image, err)
+				os.Exit(1)
+			}
+			quotaRaw = b
+		}
+
 		_, err = c.Call(ctx, ipc.MethodAgentHire, ipc.AgentHireParams{
-			RoomID:   init.RoomID,
-			Image:    ipc.ImageRef{Name: ref.Name, Version: ref.Version},
-			RankName: a.Rank,
+			RoomID:     init.RoomID,
+			Image:      ipc.ImageRef{Name: ref.Name, Version: ref.Version},
+			RankName:   a.Rank,
+			QuotaOverr: quotaRaw,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "up/hire %s: %v\n", a.Image, err)

@@ -15,7 +15,8 @@ const (
 	MethodRoomList = "room/list"
 	MethodRoomStop = "room/stop"
 	MethodRoomTeam = "room/team"
-	MethodRoomRun  = "room/run" // streaming: server emits log/status notifications until final response
+	MethodRoomRun  = "room/run"  // streaming: server emits log/status notifications until final response
+	MethodRoomLogs = "room/logs" // snapshot of Agent stderr log files
 
 	MethodAgentHire = "agent/hire"
 )

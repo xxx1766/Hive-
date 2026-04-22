@@ -10,8 +10,11 @@ import (
 )
 
 func cmdBuild(ctx context.Context, args []string) {
+	if maybeHandleHelpFlag("build", args) {
+		return
+	}
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: hive build <dir>")
+		printCommandHelp("build", os.Stderr)
 		os.Exit(2)
 	}
 	c := mustDial(ctx)
@@ -27,6 +30,9 @@ func cmdBuild(ctx context.Context, args []string) {
 }
 
 func cmdImages(ctx context.Context, args []string) {
+	if maybeHandleHelpFlag("images", args) {
+		return
+	}
 	c := mustDial(ctx)
 	defer c.Close()
 	raw, err := c.Call(ctx, ipc.MethodImageList, nil)

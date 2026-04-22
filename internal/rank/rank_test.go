@@ -59,6 +59,46 @@ func TestDirectorAllowsAllPaths(t *testing.T) {
 	}
 }
 
+func TestCapabilities_Intern(t *testing.T) {
+	rk, _ := DefaultRegistry().Get("intern")
+	caps := rk.Capabilities()
+	// intern has net + fs (read /app /tmp, write /tmp), no LLM
+	if !contains(caps, "net") || !contains(caps, "fs") {
+		t.Errorf("intern should have net+fs, got %v", caps)
+	}
+	if contains(caps, "llm") {
+		t.Errorf("intern must NOT have llm, got %v", caps)
+	}
+}
+
+func TestCapabilities_Staff(t *testing.T) {
+	rk, _ := DefaultRegistry().Get("staff")
+	for _, want := range []string{"net", "llm", "fs"} {
+		if !rk.HasCapability(want) {
+			t.Errorf("staff should have %s, caps=%v", want, rk.Capabilities())
+		}
+	}
+}
+
+func TestCapabilities_Empty(t *testing.T) {
+	rk := &Rank{Name: "sandbox"}
+	if len(rk.Capabilities()) != 0 {
+		t.Errorf("blank rank should have no caps, got %v", rk.Capabilities())
+	}
+	if rk.HasCapability("net") {
+		t.Error("blank rank shouldn't claim net")
+	}
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
 func TestPrefixBoundary(t *testing.T) {
 	// Ensure /data matches /data and /data/x but NOT /database.
 	rk := &Rank{FSRead: []string{"/data"}}

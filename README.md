@@ -369,11 +369,11 @@ make demo           # 端到端 smoke（需要 root）
 
 ### 🔧 近期（MVP 里遗留的小坑）
 
-- [ ] **Hivefile `quota:` override 未生效**：`hivefile.AgentEntry.Quota` 和 `ipc.AgentHireParams.QuotaOverr` 解析了但 daemon 没 apply。修在 `internal/daemon/daemon.go:installAgentProxies`。
-- [ ] **`capabilities.requires`/`provides` 未校验**：manifest 声明 `requires: [llm]` 但被 hire 成 `intern`（无 LLM）目前不会在 hire 时报错，要等运行期第一次 `llm/complete` 才失败。
+- [x] ~~**Hivefile `quota:` override**~~ —— 已生效。Hivefile `agents[].quota` 和 `hive hire --quota '<json>'` 都会合并到 rank 默认上（key 粒度替换）。
+- [x] ~~**`capabilities.requires` 校验**~~ —— 已生效。hire 时 manifest `requires:` 会和 Rank `Capabilities()` 对照，不匹配返回 `rank_violation`。`provides:` 目前仅用于声明，未来可做 discovery。
+- [x] ~~**`hive hire --quota`**~~ —— 已支持，`--quota '<json>'` flag。
+- [x] ~~**`hive logs <room>`**~~ —— 已实现。`hive logs <room>` 一次性 dump 所有 Agent 的 stderr；`hive logs <room> <agent>` 筛一个。无 tail/follow（用 `tail -f` 直接读文件）。
 - [ ] **`hive up` 不支持 `--room <name>` 覆盖**：演示多 Room 要备多份 Hivefile。加一个 `--room` 标志。
-- [ ] **`hive hire` 不支持 `--quota k=v` 覆盖**：只能覆盖 rank，不能只改某一个资源的配额。
-- [ ] **`hive logs <room>` 没做**：`ipc` 里预留了位置但 handler 和 CLI 都没实现。Agent stderr 落到 `~/.hive/rooms/<id>/logs/` 里但没有聚合视图。
 - [ ] **demo.sh 的 `set -o pipefail` 坑**：第 6 次 fetch 的 check 走 `out=$(...||true)` 兜底；更干净的做法是拆个 helper 函数。
 - [ ] **Agent 崩溃的诊断信息难回传**：`ns.RunInit` 里的 error 走 cmd.Stderr → 落盘 log 文件；CLI 端看到的是"agent exited"笼统报错，不便于调试。考虑把 init 阶段 error 通过一个额外的 pipe 回传给 daemon。
 - [ ] **Agent 日志没 rotation**：`~/.hive/rooms/<id>/logs/*.stderr.log` 无限增长。

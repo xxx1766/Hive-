@@ -11,49 +11,54 @@ import (
 	"github.com/anne-x/hive/internal/version"
 )
 
-const usage = `hive — Docker for Agents
-
-Usage:
-  hive <command> [args...]
-
-Commands:
-  version              print CLI + daemon version
-  ping                 check the daemon is responsive
-  build <dir>          package an Agent directory as a Hive Image
-  images               list local Hive Images
-  init <name>          create a new Room
-  rooms                list Rooms
-  hire <room> <ref>    hire an Agent into a Room; ref = name:version OR remote URL
-  team <room>          list Agents in a Room
-  pull <url>           fetch a remote Agent into the local store (github://... etc.)
-  up <hivefile|url>    init a Room + hire all Agents declared in a Hivefile.yaml
-  run <room> [task]    run a task in a Room (streams logs)
-  stop <room>          stop a Room
-`
-
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprint(os.Stderr, usage)
+		printTopHelp(os.Stderr)
 		os.Exit(2)
 	}
 
 	cmd := os.Args[1]
 	args := os.Args[2:]
 
+	// Top-level help forms.
+	switch cmd {
+	case "help":
+		if len(args) == 0 {
+			printTopHelp(os.Stdout)
+			return
+		}
+		if !printCommandHelp(args[0], os.Stdout) {
+			fmt.Fprintf(os.Stderr, "hive: unknown command %q\n", args[0])
+			printTopHelp(os.Stderr)
+			os.Exit(2)
+		}
+		return
+	case "--help", "-h":
+		printTopHelp(os.Stdout)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	switch cmd {
 	case "version", "--version", "-v":
+		if maybeHandleHelpFlag("version", args) {
+			return
+		}
 		cmdVersion(ctx)
 	case "ping":
+		if maybeHandleHelpFlag("ping", args) {
+			return
+		}
 		cmdPing(ctx)
-	case "help", "--help", "-h":
-		fmt.Print(usage)
 	default:
-		// M2+ commands dispatch through dispatchCmd; keep meta commands here.
+		// M2+ commands dispatch through dispatchCmd. dispatchCmd's
+		// handlers each call maybeHandleHelpFlag themselves so they can
+		// return early before any network calls.
 		if !dispatchCmd(ctx, cmd, args) {
-			fmt.Fprintf(os.Stderr, "hive: unknown command %q\n\n%s", cmd, usage)
+			fmt.Fprintf(os.Stderr, "hive: unknown command %q\n\n", cmd)
+			printTopHelp(os.Stderr)
 			os.Exit(2)
 		}
 	}

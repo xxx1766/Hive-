@@ -13,8 +13,11 @@ import (
 )
 
 func cmdInit(ctx context.Context, args []string) {
+	if maybeHandleHelpFlag("init", args) {
+		return
+	}
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: hive init <name>")
+		printCommandHelp("init", os.Stderr)
 		os.Exit(2)
 	}
 	c := mustDial(ctx)
@@ -30,6 +33,9 @@ func cmdInit(ctx context.Context, args []string) {
 }
 
 func cmdRooms(ctx context.Context, args []string) {
+	if maybeHandleHelpFlag("rooms", args) {
+		return
+	}
 	c := mustDial(ctx)
 	defer c.Close()
 	raw, err := c.Call(ctx, ipc.MethodRoomList, nil)
@@ -52,8 +58,11 @@ func cmdRooms(ctx context.Context, args []string) {
 }
 
 func cmdStop(ctx context.Context, args []string) {
+	if maybeHandleHelpFlag("stop", args) {
+		return
+	}
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: hive stop <room>")
+		printCommandHelp("stop", os.Stderr)
 		os.Exit(2)
 	}
 	c := mustDial(ctx)
@@ -67,8 +76,11 @@ func cmdStop(ctx context.Context, args []string) {
 }
 
 func cmdTeam(ctx context.Context, args []string) {
+	if maybeHandleHelpFlag("team", args) {
+		return
+	}
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: hive team <room>")
+		printCommandHelp("team", os.Stderr)
 		os.Exit(2)
 	}
 	c := mustDial(ctx)
@@ -104,19 +116,37 @@ func formatQuota(q map[string]any) string {
 }
 
 func cmdHire(ctx context.Context, args []string) {
+	if maybeHandleHelpFlag("hire", args) {
+		return
+	}
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: hive hire <room> <image-or-url> [--rank <rank>]")
-		fmt.Fprintln(os.Stderr, "  <image>:    name:version  (local store)")
-		fmt.Fprintln(os.Stderr, "  <url>:      github://owner/repo/path[@ref]  | owner/repo#path  | https://github.com/...")
+		printCommandHelp("hire", os.Stderr)
 		os.Exit(2)
 	}
 	roomID := args[0]
 	refInput := args[1]
 
 	rank := ""
+	var quotaRaw json.RawMessage
 	for i := 2; i < len(args); i++ {
-		if args[i] == "--rank" && i+1 < len(args) {
+		switch args[i] {
+		case "--rank":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "hire: --rank requires a value")
+				os.Exit(2)
+			}
 			rank = args[i+1]
+			i++
+		case "--quota":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "hire: --quota requires a JSON object")
+				os.Exit(2)
+			}
+			if !json.Valid([]byte(args[i+1])) {
+				fmt.Fprintf(os.Stderr, "hire: --quota value is not valid JSON: %s\n", args[i+1])
+				os.Exit(2)
+			}
+			quotaRaw = json.RawMessage(args[i+1])
 			i++
 		}
 	}
@@ -138,9 +168,10 @@ func cmdHire(ctx context.Context, args []string) {
 	}
 
 	raw, err := c.Call(ctx, ipc.MethodAgentHire, ipc.AgentHireParams{
-		RoomID:   roomID,
-		Image:    ipc.ImageRef{Name: ref.Name, Version: ref.Version},
-		RankName: rank,
+		RoomID:     roomID,
+		Image:      ipc.ImageRef{Name: ref.Name, Version: ref.Version},
+		RankName:   rank,
+		QuotaOverr: quotaRaw,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hire: %v\n", err)
