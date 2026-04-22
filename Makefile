@@ -1,4 +1,4 @@
-.PHONY: build test demo clean install-deps examples
+.PHONY: build test demo clean install-deps examples install uninstall
 
 BIN_DIR := bin
 GO      := go
@@ -44,3 +44,12 @@ clean:
 
 install-deps:
 	$(GO) mod tidy
+
+# Installs the four binaries to $(PREFIX)/bin (default /usr/local/bin).
+# PREFIX=$$HOME/.local make install  # user-local, no sudo.
+PREFIX ?= /usr/local
+install: build
+	PREFIX=$(PREFIX) ./scripts/install.sh --skip-build
+
+uninstall:
+	PREFIX=$(PREFIX) ./scripts/uninstall.sh

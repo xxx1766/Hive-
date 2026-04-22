@@ -13,30 +13,32 @@
 
 ## 5 分钟跑起来
 
-**前置**：Linux、Go 1.22+、root（需要 `CLONE_NEWNS`/`CLONE_NEWNET`）、Python 3（仅 demo 里起本地 HTTP 服务用）。
+前置：Linux、Go 1.22+、sudo（hived 需要开 namespace）。
 
 ```bash
-# 编译所有二进制（hived / hive / 四个示例 Agent）
-make build
-
-# 一键端到端演示
-sudo ./scripts/demo.sh
+git clone git@github.com:xxx1766/Hive-.git
+cd Hive-
+sudo ./scripts/install.sh          # 或 PREFIX=$HOME/.local 装到用户目录
 ```
 
-脚本会：
+脚本会检查 Go 版本、`make build`、把 4 个 binary 装进 `/usr/local/bin/`、初始化 `~/.hive/`。
 
-1. 起 `hived` 守护进程
-2. 打包 `examples/{fetch,upper,summarize}` 成 Hive Image
-3. 用 Hivefile 拉起两个 Room（`demo-room-a` / `demo-room-b`）
-4. Room A 里连续打 5 次 fetch，第 6 次被 `intern` Rank 的 API 配额挡住
-5. Room B 单独打 1 次 fetch —— 配额不受 Room A 影响
-6. 两个 Room 各跑一次 summarize，独立扣减 token 配额
-7. `hive team` 展示两边剩余配额的差异
-
-没有 `OPENAI_API_KEY` 时自动走内置 mock provider；要用真 LLM：
+起 daemon + 跑第一个 skill Agent（无需 API key）：
 
 ```bash
-OPENAI_API_KEY=sk-... sudo -E ./scripts/demo.sh
+sudo hived &
+ROOM=$(hive init demo)
+hive pull github://xxx1766/Hive-/registry/agents/brief
+hive hire "$ROOM" brief:0.1.0
+hive run  "$ROOM" '{"text":"Hive 是一套面向多 Agent AI 的能力级虚拟化系统。"}'
+```
+
+- **完整上手教程**（装好到写第一个自己的 Agent）→ [`docs/TUTORIAL.md`](docs/TUTORIAL.md)
+- **一键端到端演示**（跨 Room 隔离、配额、kind=skill、kind=workflow、远端 pull 全走一遍）：
+
+```bash
+sudo ./scripts/demo.sh             # 11 场景
+OPENAI_API_KEY=sk-... sudo -E ./scripts/demo.sh   # 用真 LLM
 ```
 
 ---
