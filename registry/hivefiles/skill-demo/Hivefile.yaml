@@ -1,0 +1,12 @@
+# A Hivefile published in the registry: references a remote Agent from the
+# same registry. Useful as a canonical "hire + run one skill Agent" demo.
+#
+# Pull with any of:
+#   hive up github://xxx1766/Hive-/registry/hivefiles/skill-demo
+#   hive up https://github.com/xxx1766/Hive-/tree/main/registry/hivefiles/skill-demo
+#   hive up xxx1766/Hive-#registry/hivefiles/skill-demo
+room: skill-demo
+entry: brief
+agents:
+  - image: github://xxx1766/Hive-/registry/agents/brief
+    rank: staff

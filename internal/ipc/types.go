@@ -34,6 +34,20 @@ type ImageListResult struct {
 	Images []ImageRef `json:"images"`
 }
 
+// ImagePullParams: fetch an Agent from a remote ref. URL accepts any of
+// the three forms documented in internal/remote.
+type ImagePullParams struct {
+	URL string `json:"url"`
+}
+
+// ImagePullResult reports the pulled Image's local identity, same as
+// what `image/build` returns — so the CLI can chain pull → hire using
+// the returned name:version.
+type ImagePullResult struct {
+	Image ImageRef `json:"image"`
+	Path  string   `json:"path"`
+}
+
 // ── Room lifecycle ────────────────────────────────────────────────────────
 
 type RoomInitParams struct {

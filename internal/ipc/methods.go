@@ -9,6 +9,7 @@ const (
 
 	MethodImageBuild = "image/build"
 	MethodImageList  = "image/list"
+	MethodImagePull  = "image/pull" // fetch a remote Agent (github://... etc.) into local store
 
 	MethodRoomInit = "room/init"
 	MethodRoomList = "room/list"

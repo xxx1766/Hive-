@@ -23,9 +23,10 @@ Commands:
   images               list local Hive Images
   init <name>          create a new Room
   rooms                list Rooms
-  hire <room> <image>  hire an Agent into a Room (image = name:version)
+  hire <room> <ref>    hire an Agent into a Room; ref = name:version OR remote URL
   team <room>          list Agents in a Room
-  up <hivefile>        init a Room + hire all Agents declared in a Hivefile.yaml
+  pull <url>           fetch a remote Agent into the local store (github://... etc.)
+  up <hivefile|url>    init a Room + hire all Agents declared in a Hivefile.yaml
   run <room> [task]    run a task in a Room (streams logs)
   stop <room>          stop a Room
 `

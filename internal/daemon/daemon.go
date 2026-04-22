@@ -20,6 +20,7 @@ import (
 	"github.com/anne-x/hive/internal/proxy/netproxy"
 	"github.com/anne-x/hive/internal/quota"
 	"github.com/anne-x/hive/internal/rank"
+	"github.com/anne-x/hive/internal/remote"
 	"github.com/anne-x/hive/internal/room"
 	"github.com/anne-x/hive/internal/rpc"
 	"github.com/anne-x/hive/internal/store"
@@ -30,6 +31,7 @@ type Daemon struct {
 	store       *store.Store
 	ranks       *rank.Registry
 	quota       *quota.Actor
+	puller      *remote.Puller
 	llmProvider llmproxy.Provider
 
 	quotaCtx    context.Context
@@ -64,10 +66,13 @@ func New() (*Daemon, error) {
 	qCtx, qCancel := context.WithCancel(context.Background())
 	go q.Run(qCtx)
 
+	st := store.New(ipc.ImagesDir())
+
 	return &Daemon{
-		store:       store.New(ipc.ImagesDir()),
+		store:       st,
 		ranks:       rank.DefaultRegistry(),
 		quota:       q,
+		puller:      remote.NewPuller(st),
 		llmProvider: prov,
 		quotaCtx:    qCtx,
 		quotaCancel: qCancel,
@@ -80,6 +85,7 @@ func New() (*Daemon, error) {
 func (d *Daemon) Register(srv *ipc.Server) {
 	srv.Handle(ipc.MethodImageBuild, d.handleImageBuild)
 	srv.Handle(ipc.MethodImageList, d.handleImageList)
+	srv.Handle(ipc.MethodImagePull, d.handleImagePull)
 	srv.Handle(ipc.MethodRoomInit, d.handleRoomInit)
 	srv.Handle(ipc.MethodRoomList, d.handleRoomList)
 	srv.Handle(ipc.MethodRoomStop, d.handleRoomStop)
@@ -159,6 +165,25 @@ func (d *Daemon) handleImageBuild(ctx context.Context, params json.RawMessage, n
 		return nil, protocol.NewError(protocol.ErrCodeInvalidManifest, err.Error())
 	}
 	return ipc.ImageBuildResult{
+		Image: ipc.ImageRef{Name: img.Manifest.Name, Version: img.Manifest.Version},
+		Path:  img.Dir,
+	}, nil
+}
+
+func (d *Daemon) handleImagePull(ctx context.Context, params json.RawMessage, _ ipc.NotifyFunc) (any, error) {
+	var p ipc.ImagePullParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, protocol.NewError(protocol.ErrCodeInvalidParams, err.Error())
+	}
+	ref, err := remote.ParseRef(p.URL)
+	if err != nil {
+		return nil, protocol.NewError(protocol.ErrCodeInvalidParams, err.Error())
+	}
+	img, err := d.puller.PullAgent(ctx, ref)
+	if err != nil {
+		return nil, protocol.NewError(protocol.ErrCodeInternal, err.Error())
+	}
+	return ipc.ImagePullResult{
 		Image: ipc.ImageRef{Name: img.Manifest.Name, Version: img.Manifest.Version},
 		Path:  img.Dir,
 	}, nil

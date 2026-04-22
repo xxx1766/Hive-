@@ -73,8 +73,9 @@ ROOM=$(./bin/hive init my-room)
 | `hive images` | 列出本地 Image |
 | `hive init <name>` | 创建新 Room，返回 RoomID |
 | `hive rooms` | 列出所有 Room |
-| `hive hire <room> <image>` | 把 Agent 招进 Room（`--rank <name>` 覆盖默认） |
-| `hive up <hivefile>` | 按 Hivefile 声明一次性建 Room + 招聘所有 Agent |
+| `hive hire <room> <ref>` | 把 Agent 招进 Room；`<ref>` 可以是 `name:version`（本地）或远端 URL（三种形式见 §Registry） |
+| `hive pull <url>` | 显式把一个远端 Agent 拉到本地 store |
+| `hive up <hivefile\|url>` | 按 Hivefile 声明一次性建 Room + 招聘所有 Agent；hivefile 本身和里面的 Agent 都可远端 |
 | `hive team <room>` | 列出 Room 内 Agent 及配额剩余 |
 | `hive run <room> [task]` | 下发任务，实时流式打印 Agent 日志（`--target <image>` 选收件人） |
 | `hive stop <room>` | 停掉 Room |
@@ -185,6 +186,43 @@ hived 在 hire 时把 hive-skill-runner **hardlink 到 Image 目录**，作为 e
 Hivefile / `hive hire --rank` 可覆盖默认 Rank。权限和配额由 `hived` 在代理层统一 enforce —— Agent 进程内核级看不到别的 Room，语义级 I/O 也跑不过 Hive 的代理层。
 
 ---
+
+## Registry（GitHub-hosted）
+
+MVP 阶段没搭独立 Registry 服务 —— 直接把 GitHub 公开目录当 registry 用，蹭 CDN / 版本 / 发现机制。本仓库的 `registry/` 就是：
+
+```
+registry/
+├── agents/            # 可分发的单个 Agent（当前只收 kind=skill / kind=json，纯文本免编译）
+│   └── brief/
+│       ├── agent.yaml
+│       └── SKILL.md
+└── hivefiles/         # 成品 Room 编排
+    └── skill-demo/
+        └── Hivefile.yaml
+```
+
+三种 URL 写法都能识别（CLI / Hivefile 的 `image:` 字段都支持）：
+
+```bash
+hive hire my-room github://xxx1766/Hive-/registry/agents/brief          # 1. scheme 形式
+hive hire my-room https://github.com/xxx1766/Hive-/tree/main/registry/agents/brief   # 2. 浏览器 URL
+hive hire my-room xxx1766/Hive-#registry/agents/brief@v0.1.0            # 3. 短格式（类 go-get）
+```
+
+`@<ref>` 可选（tag / branch / commit sha），缺省 `main`。
+
+`hive up` 同样支持远端 Hivefile，且 Hivefile 里 `agents:` 列表里的每一项也可以是远端 ref：
+
+```bash
+hive up github://xxx1766/Hive-/registry/hivefiles/skill-demo
+```
+
+**kind=binary 不支持远端拉取**（编译产物跨平台 + 信任模型太重）；想分发 binary Agent 仍需要用户本地 `hive build`。
+
+**安全提示**：拉的是别人仓库里的 SKILL.md，会在你本地 sandbox 里驱动 LLM。Hive 的 Rank + namespace 做了兜底，但仍建议固定 `@<commit-sha>` 避免别人事后篡改 main。
+
+详见 [`registry/README.md`](registry/README.md)。
 
 ## 架构速览
 
@@ -307,7 +345,7 @@ make demo           # 端到端 smoke（需要 root）
 - [ ] **seccomp-bpf syscall 白名单**：生产级沙箱补强，防止内核漏洞提权。
 - [ ] **user namespace + uid remap**：脱离 root 运行 daemon。
 - [ ] **OCI-style 层状镜像**：取代当前的"复制整个目录"策略，支持层缓存、内容寻址、digest 校验。
-- [ ] **远端 Registry（`hive push` / `hive pull`）**：把本地 store 变成对等的 Hive Hub。
+- [x] ~~**远端 Registry（`hive pull`）**~~ —— MVP 简化版已完成：GitHub 公开目录作 registry，`hive hire` / `hive up` 接受三种 URL 形式；详见 `registry/README.md`。真正的"独立 Registry 服务 + hive push"仍在 v2。
 - [ ] **跨 Room 通信**：有受控方式让 Room A 的 Agent 跟 Room B 的 Agent 对话（等价于 docker networks）。
 - [ ] **跨主机 / 多 daemon 集群**：一个 CLI 连多台机器的 hived（类似 docker swarm）。
 - [ ] **非 Linux 支持**：macOS（用 macOS Virtualization.framework？）/ Windows（WSL2？）。

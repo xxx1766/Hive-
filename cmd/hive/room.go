@@ -105,15 +105,13 @@ func formatQuota(q map[string]any) string {
 
 func cmdHire(ctx context.Context, args []string) {
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: hive hire <room> <image> [--rank <rank>]")
+		fmt.Fprintln(os.Stderr, "usage: hive hire <room> <image-or-url> [--rank <rank>]")
+		fmt.Fprintln(os.Stderr, "  <image>:    name:version  (local store)")
+		fmt.Fprintln(os.Stderr, "  <url>:      github://owner/repo/path[@ref]  | owner/repo#path  | https://github.com/...")
 		os.Exit(2)
 	}
 	roomID := args[0]
-	ref, err := image.ParseRef(args[1])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "hire: %v\n", err)
-		os.Exit(2)
-	}
+	refInput := args[1]
 
 	rank := ""
 	for i := 2; i < len(args); i++ {
@@ -125,6 +123,20 @@ func cmdHire(ctx context.Context, args []string) {
 
 	c := mustDial(ctx)
 	defer c.Close()
+
+	// If it's a remote ref, pull into local store first and swap to
+	// the resolved name:version.
+	localRef, err := pullIfRemote(ctx, c, refInput)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hire: %v\n", err)
+		os.Exit(1)
+	}
+	ref, err := image.ParseRef(localRef)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hire: %v\n", err)
+		os.Exit(2)
+	}
+
 	raw, err := c.Call(ctx, ipc.MethodAgentHire, ipc.AgentHireParams{
 		RoomID:   roomID,
 		Image:    ipc.ImageRef{Name: ref.Name, Version: ref.Version},

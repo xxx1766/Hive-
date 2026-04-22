@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/anne-x/hive/internal/image"
+	"github.com/anne-x/hive/internal/remote"
 )
 
 // File is the in-memory form of a Hivefile.yaml.
@@ -57,6 +58,21 @@ func (f *File) Validate() error {
 		if a.Image == "" {
 			return fmt.Errorf("agents[%d].image is required", i)
 		}
+		// Remote refs resolve at `hive up` time (name comes from the
+		// fetched agent.yaml). Use the tail segment as a provisional name
+		// for duplicate detection.
+		if remote.LooksRemote(a.Image) {
+			rref, err := remote.ParseRef(a.Image)
+			if err != nil {
+				return fmt.Errorf("agents[%d]: %w", i, err)
+			}
+			name := lastSegment(rref.Path)
+			if seen[name] {
+				return fmt.Errorf("agents[%d]: duplicate remote ref %q (tail %q collides)", i, a.Image, name)
+			}
+			seen[name] = true
+			continue
+		}
 		ref, err := image.ParseRef(a.Image)
 		if err != nil {
 			return fmt.Errorf("agents[%d]: %w", i, err)
@@ -70,4 +86,13 @@ func (f *File) Validate() error {
 		return fmt.Errorf("entry %q is not one of the hired agents", f.Entry)
 	}
 	return nil
+}
+
+func lastSegment(path string) string {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] == '/' {
+			return path[i+1:]
+		}
+	}
+	return path
 }
