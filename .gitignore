@@ -1,0 +1,23 @@
+# Build output
+/bin/
+
+# claude-flow runtime state
+/.claude-flow/
+/.claude-flow-metrics/
+
+# Agent stdout binaries (checked into image store at build time, not source)
+/examples/*/bin/
+
+# Logs & scratch
+*.log
+/tmp/
+
+# Editor
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
