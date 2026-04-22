@@ -11,6 +11,10 @@ const (
 	MethodImageList  = "image/list"
 	MethodImagePull  = "image/pull" // fetch a remote Agent (github://... etc.) into local store
 
+	MethodVolumeCreate = "volume/create"
+	MethodVolumeList   = "volume/list"
+	MethodVolumeRemove = "volume/remove"
+
 	MethodRoomInit = "room/init"
 	MethodRoomList = "room/list"
 	MethodRoomStop = "room/stop"

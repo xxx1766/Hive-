@@ -18,6 +18,7 @@ import (
 	"github.com/anne-x/hive/internal/protocol"
 	"github.com/anne-x/hive/internal/proxy/fsproxy"
 	"github.com/anne-x/hive/internal/proxy/llmproxy"
+	"github.com/anne-x/hive/internal/proxy/memproxy"
 	"github.com/anne-x/hive/internal/proxy/netproxy"
 	"github.com/anne-x/hive/internal/quota"
 	"github.com/anne-x/hive/internal/rank"
@@ -25,6 +26,7 @@ import (
 	"github.com/anne-x/hive/internal/room"
 	"github.com/anne-x/hive/internal/rpc"
 	"github.com/anne-x/hive/internal/store"
+	"github.com/anne-x/hive/internal/volume"
 )
 
 // Daemon is the top-level service. Fields are lazily initialised by New.
@@ -33,6 +35,7 @@ type Daemon struct {
 	ranks       *rank.Registry
 	quota       *quota.Actor
 	puller      *remote.Puller
+	volumes     *volume.Manager
 	llmProvider llmproxy.Provider
 
 	quotaCtx    context.Context
@@ -69,11 +72,18 @@ func New() (*Daemon, error) {
 
 	st := store.New(ipc.ImagesDir())
 
+	volMgr, err := volume.New(ipc.VolumesDir())
+	if err != nil {
+		qCancel()
+		return nil, fmt.Errorf("volumes: %w", err)
+	}
+
 	return &Daemon{
 		store:       st,
 		ranks:       rank.DefaultRegistry(),
 		quota:       q,
 		puller:      remote.NewPuller(st),
+		volumes:     volMgr,
 		llmProvider: prov,
 		quotaCtx:    qCtx,
 		quotaCancel: qCancel,
@@ -87,6 +97,9 @@ func (d *Daemon) Register(srv *ipc.Server) {
 	srv.Handle(ipc.MethodImageBuild, d.handleImageBuild)
 	srv.Handle(ipc.MethodImageList, d.handleImageList)
 	srv.Handle(ipc.MethodImagePull, d.handleImagePull)
+	srv.Handle(ipc.MethodVolumeCreate, d.handleVolumeCreate)
+	srv.Handle(ipc.MethodVolumeList, d.handleVolumeList)
+	srv.Handle(ipc.MethodVolumeRemove, d.handleVolumeRemove)
 	srv.Handle(ipc.MethodRoomInit, d.handleRoomInit)
 	srv.Handle(ipc.MethodRoomList, d.handleRoomList)
 	srv.Handle(ipc.MethodRoomStop, d.handleRoomStop)
@@ -132,6 +145,13 @@ func (d *Daemon) installAgentProxies(r *room.Room, m *room.Member) {
 	fs := &fsproxy.Proxy{RoomRootfs: r.Rootfs, Rank: m.Rank}
 	net := &netproxy.Proxy{RoomID: r.ID, AgentName: m.Image.Name, Rank: m.Rank, Quota: d.quota}
 	llm := &llmproxy.Proxy{RoomID: r.ID, AgentName: m.Image.Name, Rank: m.Rank, Quota: d.quota, Provider: d.llmProvider}
+	mem := &memproxy.Proxy{
+		RoomID:    r.ID,
+		AgentName: m.Image.Name,
+		Rank:      m.Rank,
+		Volumes:   d.volumes,
+		RoomsDir:  ipc.RoomsDir(),
+	}
 
 	m.Conn.Handle(rpc.MethodFsRead, func(ctx context.Context, params json.RawMessage) (any, error) {
 		return fs.Read(params)
@@ -147,6 +167,19 @@ func (d *Daemon) installAgentProxies(r *room.Room, m *room.Member) {
 	})
 	m.Conn.Handle(rpc.MethodLLMComplete, func(ctx context.Context, params json.RawMessage) (any, error) {
 		return llm.Complete(ctx, params)
+	})
+
+	m.Conn.Handle(rpc.MethodMemoryPut, func(ctx context.Context, params json.RawMessage) (any, error) {
+		return mem.Put(params)
+	})
+	m.Conn.Handle(rpc.MethodMemoryGet, func(ctx context.Context, params json.RawMessage) (any, error) {
+		return mem.Get(params)
+	})
+	m.Conn.Handle(rpc.MethodMemoryList, func(ctx context.Context, params json.RawMessage) (any, error) {
+		return mem.List(params)
+	})
+	m.Conn.Handle(rpc.MethodMemoryDelete, func(ctx context.Context, params json.RawMessage) (any, error) {
+		return mem.Delete(params)
 	})
 }
 
@@ -294,6 +327,43 @@ func (d *Daemon) handleRoomTeam(ctx context.Context, params json.RawMessage, _ i
 		})
 	}
 	return ipc.RoomTeamResult{RoomID: p.RoomID, Members: out}, nil
+}
+
+// ── volume/* ─────────────────────────────────────────────────────────────
+
+func (d *Daemon) handleVolumeCreate(ctx context.Context, params json.RawMessage, _ ipc.NotifyFunc) (any, error) {
+	var p ipc.VolumeCreateParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, protocol.NewError(protocol.ErrCodeInvalidParams, err.Error())
+	}
+	v, err := d.volumes.Create(p.Name)
+	if err != nil {
+		return nil, protocol.NewError(protocol.ErrCodeInvalidParams, err.Error())
+	}
+	return ipc.VolumeRef{Name: v.Name, Path: v.Path}, nil
+}
+
+func (d *Daemon) handleVolumeList(ctx context.Context, _ json.RawMessage, _ ipc.NotifyFunc) (any, error) {
+	vs, err := d.volumes.List()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ipc.VolumeRef, 0, len(vs))
+	for _, v := range vs {
+		out = append(out, ipc.VolumeRef{Name: v.Name, Path: v.Path})
+	}
+	return ipc.VolumeListResult{Volumes: out}, nil
+}
+
+func (d *Daemon) handleVolumeRemove(ctx context.Context, params json.RawMessage, _ ipc.NotifyFunc) (any, error) {
+	var p ipc.VolumeRemoveParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, protocol.NewError(protocol.ErrCodeInvalidParams, err.Error())
+	}
+	if err := d.volumes.Remove(p.Name); err != nil {
+		return nil, protocol.NewError(protocol.ErrCodeInvalidParams, err.Error())
+	}
+	return struct{}{}, nil
 }
 
 // handleRoomLogs reads the persisted per-Agent stderr log files under

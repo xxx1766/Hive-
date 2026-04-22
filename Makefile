@@ -22,7 +22,7 @@ $(BIN_DIR)/hive-workflow-runner: $(shell find . -name '*.go' -not -path './examp
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -ldflags "$(LDFLAGS)" -o $@ ./cmd/hive-workflow-runner
 
-EXAMPLES := echo fetch upper summarize brief url-summary research
+EXAMPLES := echo fetch upper summarize brief url-summary research memo
 
 examples:
 	@for agent in $(EXAMPLES); do \

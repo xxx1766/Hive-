@@ -193,6 +193,12 @@ func buildSystemPrompt(skill string, tools []string) string {
 	if containsAny(tools, []string{runners.GroupPeer}) {
 		b.WriteString(`Tool: peer_send — args {"to": string, "payload": any}; sends a message to another Agent in the same Room` + "\n")
 	}
+	if containsAny(tools, []string{runners.GroupMemory}) {
+		b.WriteString(`Tool: memory_put  — args {"scope": string, "key": string, "value": string}; scope="" is Room-private, scope="<volume>" is cross-Room` + "\n")
+		b.WriteString(`Tool: memory_get  — args {"scope": string, "key": string}; returns {"exists":bool,"value":string}` + "\n")
+		b.WriteString(`Tool: memory_list — args {"scope": string, "prefix": string}; returns {"keys":[string]}` + "\n")
+		b.WriteString(`Tool: memory_delete — args {"scope": string, "key": string}` + "\n")
+	}
 	return b.String()
 }
 

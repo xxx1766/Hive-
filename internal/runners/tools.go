@@ -16,10 +16,11 @@ import (
 // Tool groups used by manifests' `tools: [...]` allow-list. A tool name
 // only dispatches if its group is in the list.
 const (
-	GroupNet  = "net"
-	GroupFS   = "fs"
-	GroupPeer = "peer"
-	GroupLLM  = "llm"
+	GroupNet    = "net"
+	GroupFS     = "fs"
+	GroupPeer   = "peer"
+	GroupLLM    = "llm"
+	GroupMemory = "memory"
 )
 
 // ToolGroup classifies a tool name into its group, or "" if unknown.
@@ -33,6 +34,8 @@ func ToolGroup(tool string) string {
 		return GroupPeer
 	case tool == "llm_complete":
 		return GroupLLM
+	case strings.HasPrefix(tool, "memory_"):
+		return GroupMemory
 	}
 	return ""
 }
@@ -127,6 +130,45 @@ func DispatchTool(ctx context.Context, a *hive.Agent, name string, args map[stri
 			return nil, err
 		}
 		return "sent", nil
+
+	case "memory_put":
+		scope := getString(args, "scope")
+		key := getString(args, "key")
+		// value may be a string (preferred) or bytes — coerce to string.
+		value := getString(args, "value")
+		if err := a.MemoryPut(ctx, scope, key, []byte(value)); err != nil {
+			return nil, err
+		}
+		return "ok", nil
+
+	case "memory_get":
+		scope := getString(args, "scope")
+		key := getString(args, "key")
+		val, exists, err := a.MemoryGet(ctx, scope, key)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"exists": exists,
+			"value":  string(val),
+		}, nil
+
+	case "memory_list":
+		scope := getString(args, "scope")
+		prefix := getString(args, "prefix")
+		keys, err := a.MemoryList(ctx, scope, prefix)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"keys": keys}, nil
+
+	case "memory_delete":
+		scope := getString(args, "scope")
+		key := getString(args, "key")
+		if err := a.MemoryDelete(ctx, scope, key); err != nil {
+			return nil, err
+		}
+		return "ok", nil
 
 	case "llm_complete":
 		model := getString(args, "model")

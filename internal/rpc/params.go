@@ -92,6 +92,43 @@ type LLMCompleteResult struct {
 	Usage LLMUsage `json:"usage"`
 }
 
+// ── Agent → Hive: memory (persistent KV, Room-private or Volume-shared) ──
+
+// Scope:
+//   ""           → private to the calling Room (survives daemon restarts)
+//   "<volname>"  → shared, stored under the named Volume
+
+type MemoryPutParams struct {
+	Scope string `json:"scope,omitempty"`
+	Key   string `json:"key"`
+	Value []byte `json:"value"`
+}
+
+type MemoryGetParams struct {
+	Scope string `json:"scope,omitempty"`
+	Key   string `json:"key"`
+}
+
+// Exists=false + Value=nil means "no such key" (not an error).
+type MemoryGetResult struct {
+	Value  []byte `json:"value,omitempty"`
+	Exists bool   `json:"exists"`
+}
+
+type MemoryListParams struct {
+	Scope  string `json:"scope,omitempty"`
+	Prefix string `json:"prefix,omitempty"`
+}
+
+type MemoryListResult struct {
+	Keys []string `json:"keys"`
+}
+
+type MemoryDeleteParams struct {
+	Scope string `json:"scope,omitempty"`
+	Key   string `json:"key"`
+}
+
 // ── Agent → Hive: peer messaging ──────────────────────────────────────────
 
 type PeerSendParams struct {

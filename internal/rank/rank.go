@@ -32,6 +32,10 @@ type Rank struct {
 	// LLM: whether the Agent may call llm/complete.
 	LLMAllowed bool
 
+	// Memory: whether the Agent may use memory/put/get/list/delete.
+	// Binary gate; volume-level ACL is future work.
+	MemoryAllowed bool
+
 	// Default quotas; a Hire-time override may raise or lower these.
 	Quota Quota
 }
@@ -63,9 +67,10 @@ func (r *Rank) AllowWrite(absPath string) bool { return hasPrefix(r.FSWrite, abs
 // contains a token NOT in the Rank's set is rejected at hire time.
 //
 // Current vocabulary:
-//   "net" — Rank.NetAllowed
-//   "llm" — Rank.LLMAllowed
-//   "fs"  — Rank has at least one FS read OR write prefix
+//   "net"    — Rank.NetAllowed
+//   "llm"    — Rank.LLMAllowed
+//   "fs"     — Rank has at least one FS read OR write prefix
+//   "memory" — Rank.MemoryAllowed (memory/put/get/list/delete)
 func (r *Rank) Capabilities() []string {
 	var caps []string
 	if r.NetAllowed {
@@ -76,6 +81,9 @@ func (r *Rank) Capabilities() []string {
 	}
 	if len(r.FSRead) > 0 || len(r.FSWrite) > 0 {
 		caps = append(caps, "fs")
+	}
+	if r.MemoryAllowed {
+		caps = append(caps, "memory")
 	}
 	return caps
 }
@@ -125,33 +133,36 @@ func DefaultRegistry() *Registry {
 		},
 	}
 	r.ranks["staff"] = &Rank{
-		Name:       "staff",
-		FSRead:     []string{"/app", "/tmp", "/data"},
-		FSWrite:    []string{"/tmp", "/data"},
-		NetAllowed: true,
-		LLMAllowed: true,
+		Name:          "staff",
+		FSRead:        []string{"/app", "/tmp", "/data"},
+		FSWrite:       []string{"/tmp", "/data"},
+		NetAllowed:    true,
+		LLMAllowed:    true,
+		MemoryAllowed: true,
 		Quota: Quota{
 			Tokens:   map[string]int{"gpt-4o-mini": 5000},
 			APICalls: map[string]int{"http": 20},
 		},
 	}
 	r.ranks["manager"] = &Rank{
-		Name:       "manager",
-		FSRead:     []string{"/"},
-		FSWrite:    []string{"/tmp", "/data"},
-		NetAllowed: true,
-		LLMAllowed: true,
+		Name:          "manager",
+		FSRead:        []string{"/"},
+		FSWrite:       []string{"/tmp", "/data"},
+		NetAllowed:    true,
+		LLMAllowed:    true,
+		MemoryAllowed: true,
 		Quota: Quota{
 			Tokens:   map[string]int{"gpt-4o-mini": 50000},
 			APICalls: map[string]int{"http": 200},
 		},
 	}
 	r.ranks["director"] = &Rank{
-		Name:       "director",
-		FSRead:     []string{"/"},
-		FSWrite:    []string{"/"},
-		NetAllowed: true,
-		LLMAllowed: true,
+		Name:          "director",
+		FSRead:        []string{"/"},
+		FSWrite:       []string{"/"},
+		NetAllowed:    true,
+		LLMAllowed:    true,
+		MemoryAllowed: true,
 		// Director has unlimited quota; we signal that by leaving maps nil,
 		// and the proxy layer treats "no limit entry" as "unlimited". See
 		// quota.Actor.Consume.

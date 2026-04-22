@@ -1,0 +1,9 @@
+name: memo
+version: 0.1.0
+kind: workflow
+workflow: flow.json
+rank: staff
+tools: [memory]
+capabilities:
+  requires: [memory]
+  provides: [memo]

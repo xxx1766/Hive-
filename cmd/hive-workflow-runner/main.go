@@ -221,6 +221,12 @@ func plannerInstructions(tools []string) string {
 	if hasTool(tools, runners.GroupLLM) {
 		b.WriteString(`  llm_complete args {model,messages,max_tokens?} → {text,usage}` + "\n")
 	}
+	if hasTool(tools, runners.GroupMemory) {
+		b.WriteString(`  memory_put    args {scope,key,value} → "ok"  (scope="" private, "<vol>" shared)` + "\n")
+		b.WriteString(`  memory_get    args {scope,key} → {exists,value}` + "\n")
+		b.WriteString(`  memory_list   args {scope,prefix} → {keys}` + "\n")
+		b.WriteString(`  memory_delete args {scope,key} → "ok"` + "\n")
+	}
 	b.WriteString("\nDo NOT wrap the JSON in markdown fences. Return the bare object.\n")
 	return b.String()
 }

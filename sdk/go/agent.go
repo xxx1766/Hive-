@@ -237,6 +237,52 @@ func (a *Agent) PeerSend(ctx context.Context, to string, payload any) error {
 	return a.call(ctx, "peer/send", map[string]any{"to": to, "payload": payload}, nil)
 }
 
+// ── Memory API (persistent KV, Room-private or Volume-shared) ────────────
+
+// MemoryPut writes value under key in the given scope.
+// scope="" ⇒ Room-private; scope="<volume>" ⇒ cross-Room via named Volume.
+func (a *Agent) MemoryPut(ctx context.Context, scope, key string, value []byte) error {
+	return a.call(ctx, "memory/put", map[string]any{
+		"scope": scope, "key": key, "value": value,
+	}, nil)
+}
+
+// MemoryGet returns (value, exists, err). A missing key returns
+// (nil, false, nil) — not an error — so callers can use it as presence-check.
+func (a *Agent) MemoryGet(ctx context.Context, scope, key string) ([]byte, bool, error) {
+	var res struct {
+		Value  []byte `json:"value,omitempty"`
+		Exists bool   `json:"exists"`
+	}
+	if err := a.call(ctx, "memory/get", map[string]any{
+		"scope": scope, "key": key,
+	}, &res); err != nil {
+		return nil, false, err
+	}
+	return res.Value, res.Exists, nil
+}
+
+// MemoryList returns all keys in the scope whose string starts with prefix
+// (use "" for all keys). Result order is lexicographic.
+func (a *Agent) MemoryList(ctx context.Context, scope, prefix string) ([]string, error) {
+	var res struct {
+		Keys []string `json:"keys"`
+	}
+	if err := a.call(ctx, "memory/list", map[string]any{
+		"scope": scope, "prefix": prefix,
+	}, &res); err != nil {
+		return nil, err
+	}
+	return res.Keys, nil
+}
+
+// MemoryDelete removes key from scope. Missing keys are not an error.
+func (a *Agent) MemoryDelete(ctx context.Context, scope, key string) error {
+	return a.call(ctx, "memory/delete", map[string]any{
+		"scope": scope, "key": key,
+	}, nil)
+}
+
 // ── internals ─────────────────────────────────────────────────────────────
 
 func (a *Agent) readLoop() {

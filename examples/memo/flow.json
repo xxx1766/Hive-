@@ -1,0 +1,30 @@
+{
+  "description": "Write key=value into memory (scope from input), then read it back.",
+  "steps": [
+    {
+      "id": "put",
+      "tool": "memory_put",
+      "args": {
+        "scope": "$input.scope",
+        "key":   "$input.key",
+        "value": "$input.value"
+      }
+    },
+    {
+      "id": "got",
+      "tool": "memory_get",
+      "args": {
+        "scope": "$input.scope",
+        "key":   "$input.key"
+      }
+    },
+    {
+      "id": "all",
+      "tool": "memory_list",
+      "args": {
+        "scope": "$input.scope"
+      }
+    }
+  ],
+  "output": "$steps.all"
+}

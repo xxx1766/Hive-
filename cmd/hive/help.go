@@ -122,6 +122,23 @@ as a JSON string literal for convenience.`,
 Without <agent>, prints every Agent's log with a header line per Agent.
 No tail / follow — use 'tail -f' against the files directly for that.`,
 	},
+	"volume": {
+		usage: "hive volume <create|ls|rm> [args...]",
+		brief: "manage named persistent Volumes (cross-Room shared storage)",
+		long: `Volumes are named persistent containers under ~/.hive/volumes/<name>/.
+Any Room's Agents can read / write a Volume through the memory/* API
+(scope = volume name). Use for shared caches, knowledge bases, cross-
+Room facts.
+
+Subcommands:
+  hive volume create <name>   create a new Volume
+  hive volume ls              list all Volumes
+  hive volume rm <name>       delete a Volume and everything in it
+
+Name rules: [A-Za-z0-9_-]{1,64}. No spaces, slashes, or dots.
+
+See 'docs/TUTORIAL.md' §跨 Room 共享记忆 for the full story.`,
+	},
 	"help": {
 		usage: "hive help [<command>]",
 		brief: "show this help or per-command help",
@@ -138,6 +155,7 @@ No tail / follow — use 'tail -f' against the files directly for that.`,
 var cmdOrder = []string{
 	"version", "ping",
 	"build", "images", "pull",
+	"volume",
 	"init", "rooms", "up",
 	"hire", "team", "run", "stop", "logs",
 	"help",

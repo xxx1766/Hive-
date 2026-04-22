@@ -79,6 +79,7 @@ ROOM=$(./bin/hive init my-room)
 | `hive pull <url>` | 显式把一个远端 Agent 拉到本地 store |
 | `hive up <hivefile\|url>` | 按 Hivefile 声明一次性建 Room + 招聘所有 Agent；hivefile 本身和里面的 Agent 都可远端 |
 | `hive team <room>` | 列出 Room 内 Agent 及配额剩余 |
+| `hive volume create/ls/rm` | 管理跨 Room 持久化卷 |
 | `hive run <room> [task]` | 下发任务，实时流式打印 Agent 日志（`--target <image>` 选收件人） |
 | `hive stop <room>` | 停掉 Room |
 
@@ -232,12 +233,12 @@ tools: [llm]
 
 内置四档：
 
-| Rank | 文件系统 | 网络 | LLM | 默认配额 |
-|---|---|---|---|---|
-| `intern` | 读 `/app` `/tmp`；写 `/tmp` | ✓ | ✗ | http=5 |
-| `staff` | 读 `/app` `/tmp` `/data`；写 `/tmp` `/data` | ✓ | ✓ | http=20, tokens(gpt-4o-mini)=5000 |
-| `manager` | 读 `/`；写 `/tmp` `/data` | ✓ | ✓ | http=200, tokens=50000 |
-| `director` | 全权限 | ✓ | ✓ | 无限 |
+| Rank | 文件系统 | 网络 | LLM | Memory | 默认配额 |
+|---|---|---|---|---|---|
+| `intern` | 读 `/app` `/tmp`；写 `/tmp` | ✓ | ✗ | ✗ | http=5 |
+| `staff` | 读 `/app` `/tmp` `/data`；写 `/tmp` `/data` | ✓ | ✓ | ✓ | http=20, tokens(gpt-4o-mini)=5000 |
+| `manager` | 读 `/`；写 `/tmp` `/data` | ✓ | ✓ | ✓ | http=200, tokens=50000 |
+| `director` | 全权限 | ✓ | ✓ | ✓ | 无限 |
 
 Hivefile / `hive hire --rank` 可覆盖默认 Rank。权限和配额由 `hived` 在代理层统一 enforce —— Agent 进程内核级看不到别的 Room，语义级 I/O 也跑不过 Hive 的代理层。
 
@@ -279,6 +280,29 @@ hive up github://xxx1766/Hive-/registry/hivefiles/skill-demo
 **安全提示**：拉的是别人仓库里的 SKILL.md，会在你本地 sandbox 里驱动 LLM。Hive 的 Rank + namespace 做了兜底，但仍建议固定 `@<commit-sha>` 避免别人事后篡改 main。
 
 详见 [`registry/README.md`](registry/README.md)。
+
+## Volume & 跨 Room 共享记忆
+
+默认 Room 之间 **什么都不共享**（这是"跨 Room 隔离"卖点的前提）。要让 Agent 把知识/缓存/事实**持久化**到可以让其他 Room 读到的位置，用 **Volume**：
+
+```bash
+hive volume create kb        # ~/.hive/volumes/kb/ 创出来
+hive volume ls               # 所有 Volume
+hive volume rm kb            # 连着内容一起删
+```
+
+Agent 通过 **memory/\*** API 读写（SDK `a.MemoryPut/Get/List/Delete`，或者 runner 里的 `memory_put/get/list/delete` 工具）。`scope` 字段决定落在哪：
+
+| `scope` | 落在哪 | 跨 Room 可见？ |
+|---|---|---|
+| `""`（空字符串） | `~/.hive/rooms/<roomID>/memory/` | ❌ Room 私有，daemon 重启仍在 |
+| `"<volume-name>"` | `~/.hive/volumes/<name>/memory/` | ✅ 所有 Room 共读共写 |
+
+**访问控制**：Rank 的 `MemoryAllowed`（staff 起）是 binary gate —— 要用 memory/\* 至少 staff；`scope` 本身目前不做 Hivefile-level ACL，知道 volume 名的都能访问，适合"信任同一批 Agent 作者"的场景。
+
+**一致性**：文件每 key 一个 + 原子 rename，弱一致就绪；不做 lease / CAS（用户反馈的需求场景是"几轮才有要记的要点"，不用加锁）。强一致 v2 再说。
+
+**示例**：`examples/memo/`（静态 workflow Agent，`memory_put` + `memory_list` 两步）；`scripts/demo.sh` 场景 11 演示两个 Room 读写同一 volume。
 
 ## 架构速览
 
@@ -345,7 +369,8 @@ examples/
 ├── summarize/            staff rank，演示 llm/complete + token 配额
 ├── brief/                staff rank，kind: skill —— 只有 SKILL.md + agent.yaml
 ├── url-summary/          staff rank，kind: workflow（静态）—— agent.yaml + flow.json
-└── research/             staff rank，kind: workflow（LLM 规划）—— agent.yaml + PLANNER.md
+├── research/             staff rank，kind: workflow（LLM 规划）—— agent.yaml + PLANNER.md
+└── memo/                 staff rank，kind: workflow —— 演示 memory_put/list 读写共享 Volume
 
 hivefiles/demo/           demo 用的两份 Hivefile
 scripts/demo.sh           一键端到端演示
@@ -405,7 +430,9 @@ make demo           # 端到端 smoke（需要 root）
 - [ ] **user namespace + uid remap**：脱离 root 运行 daemon。
 - [ ] **OCI-style 层状镜像**：取代当前的"复制整个目录"策略，支持层缓存、内容寻址、digest 校验。
 - [x] ~~**远端 Registry（`hive pull`）**~~ —— MVP 简化版已完成：GitHub 公开目录作 registry，`hive hire` / `hive up` 接受三种 URL 形式；详见 `registry/README.md`。真正的"独立 Registry 服务 + hive push"仍在 v2。
-- [ ] **跨 Room 通信**：有受控方式让 Room A 的 Agent 跟 Room B 的 Agent 对话（等价于 docker networks）。
+- [x] ~~**跨 Room 持久化记忆（共享 KV）**~~ —— 已完成：`hive volume create`、`memory/*` API、弱一致语义。见 §Volume & 跨 Room 共享记忆。
+- [ ] **跨 Room 实时通信**：Room A Agent 给 Room B Agent 发消息（等价于 docker networks，不是持久化）。
+- [ ] **Volume filesystem mount**：在 Hivefile `volumes:` 里声明 ro/rw 挂载点，agent 能直接 fs_read/fs_write 读写；memory/* 依旧可用。
 - [ ] **跨主机 / 多 daemon 集群**：一个 CLI 连多台机器的 hived（类似 docker swarm）。
 - [ ] **非 Linux 支持**：macOS（用 macOS Virtualization.framework？）/ Windows（WSL2？）。
 - [ ] **Hivefile 嵌套**：一个 Hive 可以 hire 另一个 Hive（函数调用式）。

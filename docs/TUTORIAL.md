@@ -196,13 +196,45 @@ ROOM=$(hive up github://xxx1766/Hive-/registry/hivefiles/skill-demo)
 
 ---
 
-## 7. 发布你的 Agent 到公共 Registry
+## 7. 跨 Room 共享记忆（Volume + memory/\*）
+
+到目前为止两个 Room 互不可见。如果你想让 Agent A 学到的东西被 Agent B 重用（跨 Room 的 KV 知识库、缓存、事实表），用 **Volume + memory API**：
+
+```bash
+# 建一个命名的持久化容器
+hive volume create kb
+
+# Room 1 写
+ROOM1=$(hive init worker-1)
+hive hire "$ROOM1" memo:0.1.0                  # 先 hive build ./examples/memo
+hive run  "$ROOM1" '{"scope":"kb","key":"gpt4o:ctx","value":"128k"}'
+
+# Room 2 读同一个 kb —— 看得到 Room 1 的写
+ROOM2=$(hive init worker-2)
+hive hire "$ROOM2" memo:0.1.0
+hive run  "$ROOM2" '{"scope":"kb","key":"claude:ctx","value":"200k"}'
+# output 里的 keys 会列出 ["gpt4o:ctx", "claude:ctx"] —— 两个 Room 的写都可见
+
+# 私有 scope（空字符串）只在自己 Room 里持久化，daemon 重启仍在但跨 Room 不通
+hive run  "$ROOM1" '{"scope":"","key":"my-secret","value":"only-room-1"}'
+```
+
+**要点**：
+
+- `scope: ""` = Room-private；`scope: "<volume>"` = 跨 Room 共享
+- Rank 要 staff 起（intern 没 `MemoryAllowed`）
+- 自己写代码用：`sdk/go` 的 `a.MemoryPut / Get / List / Delete`
+- skill / workflow agent 用：`memory_put` / `memory_get` / `memory_list` / `memory_delete` 工具，manifest `tools: [memory]`
+
+完整设计在 [`../README.md`](../README.md#volume--跨-room-共享记忆) 的 §Volume 节。
+
+## 8. 发布你的 Agent 到公共 Registry
 
 直接往本仓库发 PR 到 `registry/agents/<your-agent>/` 即可（MVP 简化方案）。未来会拆到独立 repo。
 
 ---
 
-## 8. 排障
+## 9. 排障
 
 | 现象 | 可能原因 |
 |---|---|
@@ -214,7 +246,7 @@ ROOM=$(hive up github://xxx1766/Hive-/registry/hivefiles/skill-demo)
 
 ---
 
-## 9. 卸载
+## 10. 卸载
 
 ```bash
 sudo ./scripts/uninstall.sh          # 只删二进制，保留 ~/.hive
@@ -223,7 +255,7 @@ sudo ./scripts/uninstall.sh --purge  # 连 ~/.hive 一起删
 
 ---
 
-## 10. 继续深入
+## 11. 继续深入
 
 - **命令完整参考** → [`../README.md`](../README.md) 的 §命令速查
 - **架构设计 + 术语表** → [`../ARCHITECTURE.md`](../ARCHITECTURE.md)

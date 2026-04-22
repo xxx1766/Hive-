@@ -48,6 +48,25 @@ type ImagePullResult struct {
 	Path  string   `json:"path"`
 }
 
+// ── Volume lifecycle ──────────────────────────────────────────────────────
+
+type VolumeCreateParams struct {
+	Name string `json:"name"`
+}
+
+type VolumeRef struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+type VolumeListResult struct {
+	Volumes []VolumeRef `json:"volumes"`
+}
+
+type VolumeRemoveParams struct {
+	Name string `json:"name"`
+}
+
 // ── Room lifecycle ────────────────────────────────────────────────────────
 
 type RoomInitParams struct {

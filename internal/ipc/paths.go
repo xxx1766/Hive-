@@ -34,5 +34,6 @@ func StateRoot() string {
 	return filepath.Join(home, ".hive")
 }
 
-func ImagesDir() string { return filepath.Join(StateRoot(), "images") }
-func RoomsDir() string  { return filepath.Join(StateRoot(), "rooms") }
+func ImagesDir() string  { return filepath.Join(StateRoot(), "images") }
+func RoomsDir() string   { return filepath.Join(StateRoot(), "rooms") }
+func VolumesDir() string { return filepath.Join(StateRoot(), "volumes") }
