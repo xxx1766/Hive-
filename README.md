@@ -285,4 +285,4 @@ make demo           # 端到端 smoke（需要 root）
 
 ## 许可证
 
-TBD。
+[MIT](LICENSE)。
