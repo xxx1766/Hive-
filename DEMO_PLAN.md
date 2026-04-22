@@ -41,7 +41,7 @@
 │   │   ├── netproxy/      # HTTP 代理：共享连接池 + per-(Room,Agent) 配额
 │   │   └── llmproxy/      # LLM provider 抽象（openai / anthropic / mock）
 │   ├── ns/                # Linux namespace 设置（Cloneflags, bind-mount, pivot_root）
-│   ├── image/             # Hive Image 打包与解析（目录 + hive.yaml manifest）
+│   ├── image/             # Hive Image 打包与解析（目录 + agent.yaml manifest）
 │   ├── store/             # 本地 image store（~/.hive/images/）
 │   ├── ipc/               # CLI ↔ daemon 协议（JSON over Unix socket）
 │   └── protocol/          # Hive ↔ Agent JSON-RPC schema + codec
@@ -89,7 +89,7 @@
 
 ## 关键数据格式
 
-### `hive.yaml`（Image manifest，放在 Agent 源码目录根）
+### `agent.yaml`（Image manifest，放在 Agent 源码目录根）
 
 ```yaml
 name: summarize

@@ -15,7 +15,7 @@ type VersionResult struct {
 // ── Image ─────────────────────────────────────────────────────────────────
 
 type ImageBuildParams struct {
-	SourceDir string `json:"source_dir"` // directory containing hive.yaml
+	SourceDir string `json:"source_dir"` // directory containing agent.yaml
 }
 
 type ImageRef struct {

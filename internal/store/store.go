@@ -3,7 +3,7 @@
 // Layout:
 //
 //	<root>/<name>/<version>/
-//	    hive.yaml
+//	    agent.yaml
 //	    bin/<entry>
 //	    ...
 //

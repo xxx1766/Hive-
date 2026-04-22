@@ -39,7 +39,7 @@ func TestParseRef(t *testing.T) {
 
 func TestLoadManifestValid(t *testing.T) {
 	dir := t.TempDir()
-	writeYAML(t, filepath.Join(dir, "hive.yaml"), `
+	writeYAML(t, filepath.Join(dir, "agent.yaml"), `
 name: fetch
 version: 0.1.0
 entry: bin/fetch
@@ -56,7 +56,7 @@ rank: staff
 
 func TestLoadManifestDefaultsRank(t *testing.T) {
 	dir := t.TempDir()
-	writeYAML(t, filepath.Join(dir, "hive.yaml"), `
+	writeYAML(t, filepath.Join(dir, "agent.yaml"), `
 name: a
 version: 1
 entry: x
@@ -72,7 +72,7 @@ entry: x
 
 func TestLoadManifestMissingName(t *testing.T) {
 	dir := t.TempDir()
-	writeYAML(t, filepath.Join(dir, "hive.yaml"), `
+	writeYAML(t, filepath.Join(dir, "agent.yaml"), `
 version: 1
 entry: x
 `)
@@ -83,7 +83,7 @@ entry: x
 
 func TestLoadManifestRejectsDotDotEntry(t *testing.T) {
 	dir := t.TempDir()
-	writeYAML(t, filepath.Join(dir, "hive.yaml"), `
+	writeYAML(t, filepath.Join(dir, "agent.yaml"), `
 name: a
 version: 1
 entry: ../../../etc/passwd
@@ -95,7 +95,7 @@ entry: ../../../etc/passwd
 
 func TestLoadManifestDefaultsKindBinary(t *testing.T) {
 	dir := t.TempDir()
-	writeYAML(t, filepath.Join(dir, "hive.yaml"), `
+	writeYAML(t, filepath.Join(dir, "agent.yaml"), `
 name: a
 version: 1
 entry: bin/a
@@ -111,7 +111,7 @@ entry: bin/a
 
 func TestLoadManifestKindSkillRequiresSkillField(t *testing.T) {
 	dir := t.TempDir()
-	writeYAML(t, filepath.Join(dir, "hive.yaml"), `
+	writeYAML(t, filepath.Join(dir, "agent.yaml"), `
 name: a
 version: 1
 kind: skill
@@ -123,7 +123,7 @@ kind: skill
 
 func TestLoadManifestKindSkillHappy(t *testing.T) {
 	dir := t.TempDir()
-	writeYAML(t, filepath.Join(dir, "hive.yaml"), `
+	writeYAML(t, filepath.Join(dir, "agent.yaml"), `
 name: brief
 version: 0.1.0
 kind: skill
@@ -146,7 +146,7 @@ rank: staff
 
 func TestLoadManifestKindSkillRejectsDotDot(t *testing.T) {
 	dir := t.TempDir()
-	writeYAML(t, filepath.Join(dir, "hive.yaml"), `
+	writeYAML(t, filepath.Join(dir, "agent.yaml"), `
 name: bad
 version: 1
 kind: skill
@@ -159,7 +159,7 @@ skill: ../../etc/shadow
 
 func TestLoadManifestUnknownKind(t *testing.T) {
 	dir := t.TempDir()
-	writeYAML(t, filepath.Join(dir, "hive.yaml"), `
+	writeYAML(t, filepath.Join(dir, "agent.yaml"), `
 name: a
 version: 1
 kind: sorcery
@@ -171,7 +171,7 @@ kind: sorcery
 
 func TestLoadManifestKindJSONNotYetImplemented(t *testing.T) {
 	dir := t.TempDir()
-	writeYAML(t, filepath.Join(dir, "hive.yaml"), `
+	writeYAML(t, filepath.Join(dir, "agent.yaml"), `
 name: a
 version: 1
 kind: json

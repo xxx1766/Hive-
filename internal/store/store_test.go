@@ -10,7 +10,7 @@ import (
 
 func TestPutGetList(t *testing.T) {
 	src := t.TempDir()
-	writeFile(t, filepath.Join(src, "hive.yaml"), `
+	writeFile(t, filepath.Join(src, "agent.yaml"), `
 name: fetch
 version: 0.1.0
 entry: bin/fetch
@@ -55,7 +55,7 @@ func TestGetMissing(t *testing.T) {
 
 func TestPutOverwrites(t *testing.T) {
 	src1 := t.TempDir()
-	writeFile(t, filepath.Join(src1, "hive.yaml"), `
+	writeFile(t, filepath.Join(src1, "agent.yaml"), `
 name: x
 version: 1
 entry: old
@@ -63,7 +63,7 @@ entry: old
 	writeFile(t, filepath.Join(src1, "old"), "old")
 
 	src2 := t.TempDir()
-	writeFile(t, filepath.Join(src2, "hive.yaml"), `
+	writeFile(t, filepath.Join(src2, "agent.yaml"), `
 name: x
 version: 1
 entry: new

@@ -1,7 +1,7 @@
 // Package image models a Hive Image: a packaged, runnable Agent.
 //
 // An Image on disk is a directory that contains:
-//   - hive.yaml              (Manifest)
+//   - agent.yaml              (Manifest)
 //   - any files referenced by Entry (typically a bin/<name> binary)
 //
 // This keeps the format simple for demo — no tarballs, no layers, no digests.
@@ -19,7 +19,7 @@ import (
 )
 
 // ManifestFilename is the required filename at the root of an Image.
-const ManifestFilename = "hive.yaml"
+const ManifestFilename = "agent.yaml"
 
 // Kind taxonomy (see ARCHITECTURE.md §"Agent 打包形态"):
 const (
@@ -29,7 +29,7 @@ const (
 	KindScript = "script" // scripted runtime (future)
 )
 
-// Manifest mirrors the on-disk hive.yaml schema.
+// Manifest mirrors the on-disk agent.yaml schema.
 type Manifest struct {
 	Name         string       `yaml:"name"`
 	Version      string       `yaml:"version"`
@@ -80,7 +80,7 @@ func ParseRef(s string) (Ref, error) {
 	return Ref{Name: s[:i], Version: s[i+1:]}, nil
 }
 
-// LoadManifest reads and validates hive.yaml from dir.
+// LoadManifest reads and validates agent.yaml from dir.
 func LoadManifest(dir string) (Manifest, error) {
 	path := filepath.Join(dir, ManifestFilename)
 	data, err := os.ReadFile(path)
