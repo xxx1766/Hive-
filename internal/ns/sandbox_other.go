@@ -3,6 +3,7 @@
 package ns
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 )
@@ -18,8 +19,8 @@ type Mount struct {
 	ReadOnly bool
 }
 
-func NewAgentCommand(rootfs, imageDir, relEntry string, extraMounts []Mount) (*exec.Cmd, error) {
-	return exec.Command(filepath.Join(imageDir, relEntry)), nil
+func NewAgentCommand(rootfs, imageDir, relEntry string, extraMounts []Mount) (*exec.Cmd, *os.File, error) {
+	return exec.Command(filepath.Join(imageDir, relEntry)), nil, nil
 }
 
 func IsInitMode() bool { return false }

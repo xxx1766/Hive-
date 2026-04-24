@@ -21,6 +21,7 @@ const (
 	MethodMemoryGet    = "memory/get"
 	MethodMemoryList   = "memory/list"
 	MethodMemoryDelete = "memory/delete"
+	MethodAIToolInvoke = "ai_tool/invoke"
 	MethodTaskDone    = "task/done"
 	MethodTaskError   = "task/error"
 	MethodLog         = "log"

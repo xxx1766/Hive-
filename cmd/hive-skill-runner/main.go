@@ -199,6 +199,9 @@ func buildSystemPrompt(skill string, tools []string) string {
 		b.WriteString(`Tool: memory_list — args {"scope": string, "prefix": string}; returns {"keys":[string]}` + "\n")
 		b.WriteString(`Tool: memory_delete — args {"scope": string, "key": string}` + "\n")
 	}
+	if containsAny(tools, []string{runners.GroupAITool}) {
+		b.WriteString(`Tool: ai_tool_invoke — args {"tool": "claude-code", "prompt": string}; runs Claude Code CLI in the Room's /workspace dir, returns {"output": string}` + "\n")
+	}
 	return b.String()
 }
 

@@ -73,10 +73,28 @@ func TestCapabilities_Intern(t *testing.T) {
 
 func TestCapabilities_Staff(t *testing.T) {
 	rk, _ := DefaultRegistry().Get("staff")
-	for _, want := range []string{"net", "llm", "fs"} {
+	for _, want := range []string{"net", "llm", "fs", "memory", "ai_tool"} {
 		if !rk.HasCapability(want) {
 			t.Errorf("staff should have %s, caps=%v", want, rk.Capabilities())
 		}
+	}
+}
+
+func TestCapabilities_InternNoAITool(t *testing.T) {
+	rk, _ := DefaultRegistry().Get("intern")
+	if rk.HasCapability("ai_tool") {
+		t.Fatal("intern must NOT have ai_tool capability")
+	}
+}
+
+func TestDefaults_AIToolQuota(t *testing.T) {
+	rk, _ := DefaultRegistry().Get("staff")
+	if got := rk.Quota.APICalls["ai_tool:claude-code"]; got != 10 {
+		t.Fatalf("staff ai_tool quota: got %d want 10", got)
+	}
+	rk, _ = DefaultRegistry().Get("manager")
+	if got := rk.Quota.APICalls["ai_tool:claude-code"]; got != 100 {
+		t.Fatalf("manager ai_tool quota: got %d want 100", got)
 	}
 }
 

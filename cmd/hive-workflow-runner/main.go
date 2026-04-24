@@ -227,6 +227,9 @@ func plannerInstructions(tools []string) string {
 		b.WriteString(`  memory_list   args {scope,prefix} → {keys}` + "\n")
 		b.WriteString(`  memory_delete args {scope,key} → "ok"` + "\n")
 	}
+	if hasTool(tools, runners.GroupAITool) {
+		b.WriteString(`  ai_tool_invoke args {tool,prompt} → {output}   (runs Claude Code CLI with cwd=/workspace)` + "\n")
+	}
 	b.WriteString("\nDo NOT wrap the JSON in markdown fences. Return the bare object.\n")
 	return b.String()
 }

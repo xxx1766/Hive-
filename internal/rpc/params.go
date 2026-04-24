@@ -129,6 +129,24 @@ type MemoryDeleteParams struct {
 	Key   string `json:"key"`
 }
 
+// ── Agent → Hive: ai_tool (CLI AI tools as computational backend) ────────
+
+// AIToolInvokeParams dispatches a prompt to a registered ai-tool Provider
+// (MVP: "claude-code"). The tool runs with cwd = the calling Room's
+// workspace dir on the host; any file output lands in /workspace inside
+// the Agent's sandbox.
+type AIToolInvokeParams struct {
+	Tool    string `json:"tool"`              // "claude-code" in MVP
+	Prompt  string `json:"prompt"`
+	Timeout int    `json:"timeout,omitempty"` // seconds; 0 ⇒ daemon default (300)
+}
+
+type AIToolInvokeResult struct {
+	Output   string `json:"output"`
+	Stderr   string `json:"stderr,omitempty"`
+	ExitCode int    `json:"exit_code"`
+}
+
 // ── Agent → Hive: peer messaging ──────────────────────────────────────────
 
 type PeerSendParams struct {

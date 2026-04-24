@@ -1,0 +1,12 @@
+name: coder
+version: 0.1.0
+kind: workflow
+workflow: flow.json
+rank: staff
+tools: [fs, ai_tool]
+capabilities:
+  requires: [fs, ai_tool]
+  provides: [coder]
+quota:
+  api_calls:
+    "ai_tool:claude-code": 10

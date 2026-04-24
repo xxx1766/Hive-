@@ -21,6 +21,7 @@ const (
 	GroupPeer   = "peer"
 	GroupLLM    = "llm"
 	GroupMemory = "memory"
+	GroupAITool = "ai_tool"
 )
 
 // ToolGroup classifies a tool name into its group, or "" if unknown.
@@ -36,6 +37,8 @@ func ToolGroup(tool string) string {
 		return GroupLLM
 	case strings.HasPrefix(tool, "memory_"):
 		return GroupMemory
+	case tool == "ai_tool_invoke":
+		return GroupAITool
 	}
 	return ""
 }
@@ -169,6 +172,21 @@ func DispatchTool(ctx context.Context, a *hive.Agent, name string, args map[stri
 			return nil, err
 		}
 		return "ok", nil
+
+	case "ai_tool_invoke":
+		tool := getString(args, "tool")
+		if tool == "" {
+			tool = "claude-code"
+		}
+		prompt := getString(args, "prompt")
+		if prompt == "" {
+			return nil, fmt.Errorf("ai_tool_invoke: prompt is required")
+		}
+		out, err := a.AIToolInvoke(ctx, tool, prompt)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"output": out}, nil
 
 	case "llm_complete":
 		model := getString(args, "model")

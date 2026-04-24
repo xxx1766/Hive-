@@ -19,17 +19,23 @@ trap cleanup EXIT
 
 say() { printf "\n\033[1;34m▶\033[0m %s\n" "$*"; }
 
-say "1/13 build"
+# run_tolerant: run a command that may legitimately fail (quota rejection,
+# remote fetch, negative assertion) and return its combined stdout/stderr.
+# Swallows the exit code so the caller can grep/assert on the output without
+# tripping 'set -e' or having pipefail propagate through a capturing pipeline.
+run_tolerant() { "$@" 2>&1 || true; }
+
+say "1/14 build"
 make build >/dev/null
 rm -rf "$HIVE_STATE"
 mkdir -p "$HIVE_STATE"
 
-say "2/13 start local HTTP server on :8991 (so the fetch demo is offline-safe)"
+say "2/14 start local HTTP server on :8991 (so the fetch demo is offline-safe)"
 python3 -m http.server 8991 --directory /tmp >/dev/null 2>&1 &
 HTTP_PID=$!
 sleep 0.3
 
-say "3/13 start hived"
+say "3/14 start hived"
 ./bin/hived >"$HIVE_STATE/daemon.log" 2>&1 &
 HIVED_PID=$!
 for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -38,19 +44,19 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 ./bin/hive ping
 
-say "4/13 build four Agent images (3 binary + 1 skill)"
+say "4/14 build four Agent images (3 binary + 1 skill)"
 ./bin/hive build ./examples/fetch     | sed 's/^/  /'
 ./bin/hive build ./examples/upper     | sed 's/^/  /'
 ./bin/hive build ./examples/summarize | sed 's/^/  /'
 ./bin/hive build ./examples/brief     | sed 's/^/  /'
 
-say "5/13 up two Rooms with the same three Agents (namespace-isolated)"
+say "5/14 up two Rooms with the same three Agents (namespace-isolated)"
 ROOM_A=$(./bin/hive up hivefiles/demo/room-a.yaml)
 ROOM_B=$(./bin/hive up hivefiles/demo/room-b.yaml)
 echo "   ROOM_A=$ROOM_A"
 echo "   ROOM_B=$ROOM_B"
 
-say "6/13 Room A: consume fetch quota (intern has 5 http calls)"
+say "6/14 Room A: consume fetch quota (intern has 5 http calls)"
 for i in 1 2 3 4 5; do
     echo "   fetch #$i:"
     ./bin/hive run "$ROOM_A" --target fetch '{"url":"http://127.0.0.1:8991/"}' | \
@@ -58,16 +64,14 @@ for i in 1 2 3 4 5; do
 done
 
 say "   Room A: 6th fetch should be rejected by quota (observing enforcement)"
-# Capture first; pipefail would otherwise propagate hive's non-zero exit and
-# mask the grep result.
-out=$(./bin/hive run "$ROOM_A" --target fetch '{"url":"http://127.0.0.1:8991/"}' 2>&1 || true)
+out=$(run_tolerant ./bin/hive run "$ROOM_A" --target fetch '{"url":"http://127.0.0.1:8991/"}')
 if echo "$out" | grep -qi 'quota'; then
     echo "   ✓ quota rejected as expected: $(echo "$out" | grep -i quota | head -1)"
 else
     echo "   ✗ unexpected: $out"
 fi
 
-say "7/13 Room B: one fetch succeeds (independent quota)"
+say "7/14 Room B: one fetch succeeds (independent quota)"
 ./bin/hive run "$ROOM_B" --target fetch '{"url":"http://127.0.0.1:8991/"}' | \
     grep -E 'output:|INFO' | head -3 | sed 's/^/  /'
 
@@ -77,7 +81,7 @@ say "   summarize in both Rooms (deducts tokens independently)"
 ./bin/hive run "$ROOM_B" --target summarize '{"text":"machine learning is a subset of artificial intelligence"}' | \
     grep -E 'output:|INFO' | head -5 | sed 's/^/  B: /'
 
-say "8/13 kind=skill Agent: a SKILL.md Agent runs via the built-in runner"
+say "8/14 kind=skill Agent: a SKILL.md Agent runs via the built-in runner"
 ROOM_C=$(./bin/hive init skill-demo)
 ./bin/hive hire "$ROOM_C" brief:0.1.0 >/dev/null
 echo "   Room $ROOM_C hired brief:0.1.0 (kind=skill, SKILL.md driven)"
@@ -85,7 +89,7 @@ echo "   Room $ROOM_C hired brief:0.1.0 (kind=skill, SKILL.md driven)"
     grep -E 'output:|INFO' | head -5 | sed 's/^/  brief: /'
 ./bin/hive stop "$ROOM_C" >/dev/null
 
-say "9/13 remote pull: hire a skill Agent from the GitHub-hosted registry"
+say "9/14 remote pull: hire a skill Agent from the GitHub-hosted registry"
 # This scene fetches registry/agents/brief from the live public repo.
 # Requires network access to raw.githubusercontent.com; on failure we
 # warn and continue instead of aborting the demo.
@@ -98,7 +102,7 @@ else
 fi
 ./bin/hive stop "$ROOM_D" >/dev/null 2>&1 || true
 
-say "10/13 kind=workflow: static flow.json (fetch → llm_complete via variable refs)"
+say "10/14 kind=workflow: static flow.json (fetch → llm_complete via variable refs)"
 ./bin/hive build ./examples/url-summary | sed 's/^/  /'
 ROOM_E=$(./bin/hive init workflow-demo)
 ./bin/hive hire "$ROOM_E" url-summary:0.1.0 >/dev/null
@@ -106,7 +110,7 @@ ROOM_E=$(./bin/hive init workflow-demo)
     grep -E 'INFO|output:' | head -5 | sed -E 's/^/  url-summary: /; s/(.{200}).*/\1…/'
 ./bin/hive stop "$ROOM_E" >/dev/null
 
-say "11/13 cross-Room memory: two Rooms share a Volume"
+say "11/14 cross-Room memory: two Rooms share a Volume"
 ./bin/hive build ./examples/memo 2>&1 | sed 's/^/  /'
 ./bin/hive volume create demo-kb 2>&1 | sed 's/^/  /'
 ROOM_M1=$(./bin/hive init memo-room-1)
@@ -123,7 +127,7 @@ echo "   Room 2 writes its own key + lists all — should see both:"
 ./bin/hive stop "$ROOM_M2" >/dev/null
 ./bin/hive volume rm demo-kb >/dev/null
 
-say "12/13 fs mount: two Rooms share a Volume via bind-mount (raw fs_read/fs_write)"
+say "12/14 fs mount: two Rooms share a Volume via bind-mount (raw fs_read/fs_write)"
 ./bin/hive build ./examples/blob 2>&1 | sed 's/^/  /'
 ./bin/hive volume create fs-kb 2>&1 | sed 's/^/  /'
 ROOM_B1=$(./bin/hive init fs-room-1)
@@ -140,7 +144,15 @@ echo "   Room 2 writes another + lists — sees Room 1's file too:"
 ./bin/hive stop "$ROOM_B2" >/dev/null
 ./bin/hive volume rm fs-kb >/dev/null
 
-say "13/13 team snapshots: observe per-Room quota divergence"
+say "13/14 ai_tool/invoke: Agent 调 Claude Code CLI 做代码工作（Mock fallback 无 API key 时）"
+./bin/hive build ./examples/coder 2>&1 | sed 's/^/  /'
+ROOM_C=$(./bin/hive init coder-demo)
+./bin/hive hire "$ROOM_C" coder:0.1.0 >/dev/null
+./bin/hive run "$ROOM_C" '{"filename":"/workspace/snippet.go","code":"package main\nfunc main(){println(\"hi\")}\n","prompt":"add a TODO comment"}' | \
+    grep -E 'INFO|output:' | head -6 | sed -E 's/^/  coder: /; s/(.{200}).*/\1…/'
+./bin/hive stop "$ROOM_C" >/dev/null
+
+say "14/14 team snapshots: observe per-Room quota divergence"
 printf "  \033[1mRoom A:\033[0m\n"
 ./bin/hive team "$ROOM_A" | sed 's/^/    /'
 printf "\n  \033[1mRoom B:\033[0m\n"

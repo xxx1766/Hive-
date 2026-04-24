@@ -37,3 +37,10 @@ func StateRoot() string {
 func ImagesDir() string  { return filepath.Join(StateRoot(), "images") }
 func RoomsDir() string   { return filepath.Join(StateRoot(), "rooms") }
 func VolumesDir() string { return filepath.Join(StateRoot(), "volumes") }
+
+// WorkspaceDir is the Room's scratch dir — bind-mounted into every
+// Agent's sandbox at /workspace, and used as the cwd for ai_tool/invoke
+// (so Claude Code's default file operations stay scoped to this dir).
+func WorkspaceDir(roomID string) string {
+	return filepath.Join(RoomsDir(), roomID, "workspace")
+}

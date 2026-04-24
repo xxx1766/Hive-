@@ -7,17 +7,18 @@ import (
 
 func TestToolGroup(t *testing.T) {
 	cases := map[string]string{
-		"net_fetch":     GroupNet,
-		"fs_read":       GroupFS,
-		"fs_write":      GroupFS,
-		"fs_list":       GroupFS,
-		"peer_send":     GroupPeer,
-		"llm_complete":  GroupLLM,
-		"memory_put":    GroupMemory,
-		"memory_get":    GroupMemory,
-		"memory_list":   GroupMemory,
-		"memory_delete": GroupMemory,
-		"unknown":       "",
+		"net_fetch":       GroupNet,
+		"fs_read":         GroupFS,
+		"fs_write":        GroupFS,
+		"fs_list":         GroupFS,
+		"peer_send":       GroupPeer,
+		"llm_complete":    GroupLLM,
+		"memory_put":      GroupMemory,
+		"memory_get":      GroupMemory,
+		"memory_list":     GroupMemory,
+		"memory_delete":   GroupMemory,
+		"ai_tool_invoke":  GroupAITool,
+		"unknown":         "",
 	}
 	for in, want := range cases {
 		if got := ToolGroup(in); got != want {

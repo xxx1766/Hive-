@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -18,6 +19,7 @@ import (
 	"github.com/anne-x/hive/internal/ipc"
 	"github.com/anne-x/hive/internal/ns"
 	"github.com/anne-x/hive/internal/protocol"
+	"github.com/anne-x/hive/internal/proxy/aitoolproxy"
 	"github.com/anne-x/hive/internal/proxy/fsproxy"
 	"github.com/anne-x/hive/internal/proxy/llmproxy"
 	"github.com/anne-x/hive/internal/proxy/memproxy"
@@ -33,12 +35,13 @@ import (
 
 // Daemon is the top-level service. Fields are lazily initialised by New.
 type Daemon struct {
-	store       *store.Store
-	ranks       *rank.Registry
-	quota       *quota.Actor
-	puller      *remote.Puller
-	volumes     *volume.Manager
-	llmProvider llmproxy.Provider
+	store          *store.Store
+	ranks          *rank.Registry
+	quota          *quota.Actor
+	puller         *remote.Puller
+	volumes        *volume.Manager
+	llmProvider    llmproxy.Provider
+	aiToolProvider aitoolproxy.Provider
 
 	quotaCtx    context.Context
 	quotaCancel context.CancelFunc
@@ -68,6 +71,13 @@ func New() (*Daemon, error) {
 		prov = oa
 	}
 
+	// Pick ai-tool provider (Claude Code if ANTHROPIC_API_KEY + `claude`
+	// are present; Mock otherwise so `examples/coder` runs offline).
+	var aiProv aitoolproxy.Provider = aitoolproxy.MockProvider{}
+	if cc := aitoolproxy.NewClaudeCodeFromEnv(); cc != nil {
+		aiProv = cc
+	}
+
 	q := quota.New(0)
 	qCtx, qCancel := context.WithCancel(context.Background())
 	go q.Run(qCtx)
@@ -81,16 +91,17 @@ func New() (*Daemon, error) {
 	}
 
 	return &Daemon{
-		store:       st,
-		ranks:       rank.DefaultRegistry(),
-		quota:       q,
-		puller:      remote.NewPuller(st),
-		volumes:     volMgr,
-		llmProvider: prov,
-		quotaCtx:    qCtx,
-		quotaCancel: qCancel,
-		rooms:       make(map[string]*room.Room),
-		notifys:     make(map[string]ipc.NotifyFunc),
+		store:          st,
+		ranks:          rank.DefaultRegistry(),
+		quota:          q,
+		puller:         remote.NewPuller(st),
+		volumes:        volMgr,
+		llmProvider:    prov,
+		aiToolProvider: aiProv,
+		quotaCtx:       qCtx,
+		quotaCancel:    qCancel,
+		rooms:          make(map[string]*room.Room),
+		notifys:        make(map[string]ipc.NotifyFunc),
 	}, nil
 }
 
@@ -183,6 +194,14 @@ func (d *Daemon) installAgentProxies(r *room.Room, m *room.Member) {
 		Volumes:   d.volumes,
 		RoomsDir:  ipc.RoomsDir(),
 	}
+	ait := &aitoolproxy.Proxy{
+		RoomID:    r.ID,
+		AgentName: m.Image.Name,
+		Rank:      m.Rank,
+		Quota:     d.quota,
+		Provider:  d.aiToolProvider,
+		Workspace: ipc.WorkspaceDir(r.ID),
+	}
 
 	m.Conn.Handle(rpc.MethodFsRead, func(ctx context.Context, params json.RawMessage) (any, error) {
 		return fs.Read(params)
@@ -211,6 +230,10 @@ func (d *Daemon) installAgentProxies(r *room.Room, m *room.Member) {
 	})
 	m.Conn.Handle(rpc.MethodMemoryDelete, func(ctx context.Context, params json.RawMessage) (any, error) {
 		return mem.Delete(params)
+	})
+
+	m.Conn.Handle(rpc.MethodAIToolInvoke, func(ctx context.Context, params json.RawMessage) (any, error) {
+		return ait.Invoke(ctx, params)
 	})
 }
 
@@ -511,9 +534,15 @@ func (d *Daemon) handleAgentHire(ctx context.Context, params json.RawMessage, _ 
 					rk.Name, req, img.Manifest.Capabilities.Requires))
 		}
 	}
-	// Per-agent stderr log for easier debugging.
+	// Per-agent stderr log for easier debugging. Capped + rotated so
+	// long-running Agents don't fill the disk (see logrotate.go). Declared
+	// as the interface type so an open failure leaves logFile as a real
+	// nil (avoiding the typed-nil trap through HireOpts.LogFile).
 	logPath := filepath.Join(ipc.RoomsDir(), p.RoomID, "logs", img.Manifest.Name+".stderr.log")
-	logFile, _ := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+	var logFile io.WriteCloser
+	if f, err := openRotatingLog(logPath, logMaxBytes()); err == nil {
+		logFile = f
+	}
 
 	preparedImg, extraEnv, err := d.prepareImageByKind(img)
 	if err != nil {
@@ -535,9 +564,19 @@ func (d *Daemon) handleAgentHire(ctx context.Context, params json.RawMessage, _ 
 		quotaOverride = &q
 	}
 
+	// Every Agent gets its Room's workspace bind-mounted as /workspace.
+	// This is the default inbox/outbox and the cwd for ai_tool/invoke.
+	// Declared first so Hivefile-listed volumes never collide with it
+	// via their mountpoint (a user can't accidentally mount another vol
+	// at /workspace — that'd shadow the default one).
+	mounts := []ns.Mount{{
+		Source:   ipc.WorkspaceDir(r.ID),
+		Target:   "/workspace",
+		ReadOnly: false,
+	}}
+
 	// Resolve requested volumes. Fail fast with a clear error if a name
 	// doesn't exist — better than letting the Agent crash at fs_read time.
-	var mounts []ns.Mount
 	for _, v := range p.Volumes {
 		vol, err := d.volumes.Get(v.Name)
 		if err != nil {

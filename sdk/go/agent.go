@@ -283,6 +283,26 @@ func (a *Agent) MemoryDelete(ctx context.Context, scope, key string) error {
 	}, nil)
 }
 
+// ── AI tool invocation (Claude Code CLI et al.) ──────────────────────────
+
+// AIToolInvoke runs a CLI-shaped AI tool (MVP: "claude-code") with the
+// calling Room's /workspace as cwd. Files Agents write under /workspace
+// before this call are visible to the tool; files the tool writes land
+// back under /workspace where the Agent can fs_read them.
+func (a *Agent) AIToolInvoke(ctx context.Context, tool, prompt string) (string, error) {
+	var res struct {
+		Output   string `json:"output"`
+		Stderr   string `json:"stderr"`
+		ExitCode int    `json:"exit_code"`
+	}
+	if err := a.call(ctx, "ai_tool/invoke", map[string]any{
+		"tool": tool, "prompt": prompt,
+	}, &res); err != nil {
+		return "", err
+	}
+	return res.Output, nil
+}
+
 // ── internals ─────────────────────────────────────────────────────────────
 
 func (a *Agent) readLoop() {

@@ -86,7 +86,14 @@ func printLog(n ipc.RoomLogNotification) {
 	if level == "" {
 		level = "INFO"
 	}
-	fmt.Printf("[%s] %s: %s\n", level, n.ImageName, n.Msg)
+	line := fmt.Sprintf("[%s] %s: %s", level, n.ImageName, n.Msg)
+	if len(n.Fields) > 0 {
+		// Compact one-line JSON of the extra fields — cheap + readable.
+		if b, err := json.Marshal(n.Fields); err == nil {
+			line += " " + string(b)
+		}
+	}
+	fmt.Println(line)
 }
 
 func printStatus(n ipc.RoomStatusNotification) {

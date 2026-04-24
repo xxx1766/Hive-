@@ -67,7 +67,7 @@ hived. Prints the RoomID; capture it for subsequent hire/run/team/stop.`,
 		brief: "list all Rooms",
 	},
 	"up": {
-		usage: "hive up <hivefile-or-url>",
+		usage: "hive up <hivefile-or-url> [--room <name>]",
 		brief: "init a Room + hire all Agents declared in a Hivefile.yaml",
 		long: `<hivefile-or-url> accepts either a local path to a Hivefile.yaml or any
 of the three remote URL forms accepted by 'hive pull'.
@@ -76,7 +76,12 @@ Inside the Hivefile, each agent's 'image:' field may also be a remote
 URL — the daemon pulls each one on the fly.
 
 Quota overrides in the Hivefile ('quota:' under each agent) propagate
-down to the daemon as partial overrides on top of Rank defaults.`,
+down to the daemon as partial overrides on top of Rank defaults.
+
+Flags:
+  --room <name>  override the Room name declared in the Hivefile.
+                 Useful for running the same Hivefile as multiple
+                 independent Rooms (e.g. parallel demos/experiments).`,
 	},
 	"hire": {
 		usage: "hive hire <room> <ref> [--rank <name>] [--quota <json>] [--volume <name>:<mountpoint>[:<ro|rw>]]...",

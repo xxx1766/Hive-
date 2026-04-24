@@ -77,7 +77,7 @@ ROOM=$(./bin/hive init my-room)
 | `hive rooms` | 列出所有 Room |
 | `hive hire <room> <ref>` | 把 Agent 招进 Room；`<ref>` 可以是 `name:version`（本地）或远端 URL（三种形式见 §Registry） |
 | `hive pull <url>` | 显式把一个远端 Agent 拉到本地 store |
-| `hive up <hivefile\|url>` | 按 Hivefile 声明一次性建 Room + 招聘所有 Agent；hivefile 本身和里面的 Agent 都可远端 |
+| `hive up <hivefile\|url> [--room <name>]` | 按 Hivefile 声明一次性建 Room + 招聘所有 Agent；`--room` 可覆盖 Hivefile 里的 room 名；hivefile 本身和里面的 Agent 都可远端 |
 | `hive team <room>` | 列出 Room 内 Agent 及配额剩余 |
 | `hive volume create/ls/rm` | 管理跨 Room 持久化卷 |
 | `hive run <room> [task]` | 下发任务，实时流式打印 Agent 日志（`--target <image>` 选收件人） |
@@ -233,12 +233,12 @@ tools: [llm]
 
 内置四档：
 
-| Rank | 文件系统 | 网络 | LLM | Memory | 默认配额 |
-|---|---|---|---|---|---|
-| `intern` | 读 `/app` `/tmp`；写 `/tmp` | ✓ | ✗ | ✗ | http=5 |
-| `staff` | 读 `/app` `/tmp` `/data`；写 `/tmp` `/data` | ✓ | ✓ | ✓ | http=20, tokens(gpt-4o-mini)=5000 |
-| `manager` | 读 `/`；写 `/tmp` `/data` | ✓ | ✓ | ✓ | http=200, tokens=50000 |
-| `director` | 全权限 | ✓ | ✓ | ✓ | 无限 |
+| Rank | 文件系统 | 网络 | LLM | Memory | AI Tool | 默认配额 |
+|---|---|---|---|---|---|---|
+| `intern` | 读 `/app` `/tmp`；写 `/tmp` | ✓ | ✗ | ✗ | ✗ | http=5 |
+| `staff` | 读 `/app` `/tmp` `/data`；写 `/tmp` `/data` | ✓ | ✓ | ✓ | ✓ | http=20, tokens(gpt-4o-mini)=5000, ai_tool:claude-code=10 |
+| `manager` | 读 `/`；写 `/tmp` `/data` | ✓ | ✓ | ✓ | ✓ | http=200, tokens=50000, ai_tool:claude-code=100 |
+| `director` | 全权限 | ✓ | ✓ | ✓ | ✓ | 无限 |
 
 Hivefile / `hive hire --rank` 可覆盖默认 Rank。权限和配额由 `hived` 在代理层统一 enforce —— Agent 进程内核级看不到别的 Room，语义级 I/O 也跑不过 Hive 的代理层。
 
@@ -426,10 +426,10 @@ make demo           # 端到端 smoke（需要 root）
 - [x] ~~**`capabilities.requires` 校验**~~ —— 已生效。hire 时 manifest `requires:` 会和 Rank `Capabilities()` 对照，不匹配返回 `rank_violation`。`provides:` 目前仅用于声明，未来可做 discovery。
 - [x] ~~**`hive hire --quota`**~~ —— 已支持，`--quota '<json>'` flag。
 - [x] ~~**`hive logs <room>`**~~ —— 已实现。`hive logs <room>` 一次性 dump 所有 Agent 的 stderr；`hive logs <room> <agent>` 筛一个。无 tail/follow（用 `tail -f` 直接读文件）。
-- [ ] **`hive up` 不支持 `--room <name>` 覆盖**：演示多 Room 要备多份 Hivefile。加一个 `--room` 标志。
-- [ ] **demo.sh 的 `set -o pipefail` 坑**：第 6 次 fetch 的 check 走 `out=$(...||true)` 兜底；更干净的做法是拆个 helper 函数。
-- [ ] **Agent 崩溃的诊断信息难回传**：`ns.RunInit` 里的 error 走 cmd.Stderr → 落盘 log 文件；CLI 端看到的是"agent exited"笼统报错，不便于调试。考虑把 init 阶段 error 通过一个额外的 pipe 回传给 daemon。
-- [ ] **Agent 日志没 rotation**：`~/.hive/rooms/<id>/logs/*.stderr.log` 无限增长。
+- [x] ~~**`hive up --room <name>` 覆盖**~~ —— 已支持。同一份 Hivefile 可以用 `hive up hivefile.yaml --room demo-a` / `--room demo-b` 跑出并行的独立 Room。
+- [x] ~~**demo.sh 的 `set -o pipefail` 坑**~~ —— 抽了个 `run_tolerant` helper（`scripts/demo.sh`），把"明知可能失败（quota 拒绝 / 远端拉取 / 负断言）"的调用包起来，`out=$(run_tolerant ...)` 就不会再被 pipefail 或 `set -e` 误伤。
+- [x] ~~**Agent 崩溃的诊断信息难回传**~~ —— `ns.NewAgentCommand` 现在多开了一条 init-err 管道（父进程读端，子进程 FD 3）。`RunInit` 在 setup 失败时把错误同时写到 stderr log 和 FD 3，成功时在 `syscall.Exec` 之前把 FD 3 关掉；`agent.Conn.WaitInit` 阻塞到这一信号再让 `room.Hire` 返回，于是 `hive hire` / `hive up` 看到的是 `sandbox init: setup: pivot_root: operation not permitted` 而不再是笼统的 `agent exited`。
+- [x] ~~**Agent 日志没 rotation**~~ —— 新增 `internal/daemon/logrotate.go`：每个 Agent 的 `*.stderr.log` 默认 10 MiB 上限，到顶就 rename 成 `.1` + 重开新文件，只保留一份 backup（"不爆盘"重于"留全量"）。可用 `HIVE_LOG_MAX_BYTES` 覆盖。顺带修了一个 FD 泄漏：以前 hire 的 log 文件始终不 close，现在 `room.Hire` 在 agent 退出时 close（cmd.Wait 已 join exec 的 stderr copy goroutine，无丢字节 race）。
 
 ### 🧱 中期（架构内稳健性）
 
@@ -445,7 +445,7 @@ make demo           # 端到端 smoke（需要 root）
 新增（来自 `ARCHITECTURE.md` §"架构扩展方向"）：
 
 - [ ] **`mcp/call` proxy**：Hive 作为 MCP 客户端调外部 MCP server。新建 `internal/proxy/mcpproxy/`，支持 stdio + HTTP 两种 transport；Rank 加 `MCPAllowed` 字段；配额 key `api_calls:mcp:<server>`。
-- [ ] **`ai_tool/invoke` proxy**：Agent 通过 `exec` 方式调 Claude Code CLI / Cursor CLI。新建 `internal/proxy/aitoolproxy/`；Rank 加 `AIToolAllowed`；配额 key `api_calls:ai_tool:<name>`；注意会话/上下文持久化语义。
+- [x] ~~**`ai_tool/invoke` proxy**~~ —— 已完成：`internal/proxy/aitoolproxy/`、Rank.AIToolAllowed、配额 `api_calls:ai_tool:claude-code`。每 Room 自带 `~/.hive/rooms/<id>/workspace/` 作 claude cwd + bind-mount 作 `/workspace`。`examples/coder/` 和 TUTORIAL §8 有完整示例；Cursor/Codex 等后端加 Provider 即可。硬沙箱（firejail）留 v2。
 - [x] ~~**`manifest.kind` 字段**~~ —— 已完成：`internal/image/manifest.go` 加了 `Kind` / `Skill` / `Model` / `Tools` 字段；`internal/daemon/daemon.go:handleAgentHire` 检测 Kind 并走 `prepareSkillImage` 分支。
 - [x] ~~**`kind: skill` Agent 形态**~~ —— 已完成：`cmd/hive-skill-runner/` 二进制 + ReAct-lite JSON 循环；`examples/brief/` 作为参考 skill Agent。
 - [x] ~~**`kind: workflow` Agent 形态**~~ —— 已完成：`cmd/hive-workflow-runner` 支持两种模式：`workflow: flow.json` 静态声明 + `planner: PLANNER.md` LLM 规划；变量替换 `$input.x` / `$steps.<id>.<path>`；`examples/{url-summary,research}/` 两个参考实现。

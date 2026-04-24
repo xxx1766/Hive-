@@ -1,0 +1,29 @@
+{
+  "description": "Stage a code snippet into /workspace, ask Claude Code to edit it, read the result back. cwd for claude = the Room's workspace dir; files outside /workspace are not reachable through the default tools.",
+  "steps": [
+    {
+      "id": "stage",
+      "tool": "fs_write",
+      "args": {
+        "path":    "$input.filename",
+        "content": "$input.code"
+      }
+    },
+    {
+      "id": "refactor",
+      "tool": "ai_tool_invoke",
+      "args": {
+        "tool":   "claude-code",
+        "prompt": "$input.prompt"
+      }
+    },
+    {
+      "id": "read_back",
+      "tool": "fs_read",
+      "args": {
+        "path": "$input.filename"
+      }
+    }
+  ],
+  "output": "$steps.read_back"
+}

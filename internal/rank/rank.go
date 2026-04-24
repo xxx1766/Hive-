@@ -36,6 +36,11 @@ type Rank struct {
 	// Binary gate; volume-level ACL is future work.
 	MemoryAllowed bool
 
+	// AITool: whether the Agent may call ai_tool/invoke (Claude Code CLI
+	// or any registered ai-tool Provider). Binary gate; per-tool ACL is
+	// future work — see the aitoolproxy package.
+	AIToolAllowed bool
+
 	// Default quotas; a Hire-time override may raise or lower these.
 	Quota Quota
 }
@@ -67,10 +72,11 @@ func (r *Rank) AllowWrite(absPath string) bool { return hasPrefix(r.FSWrite, abs
 // contains a token NOT in the Rank's set is rejected at hire time.
 //
 // Current vocabulary:
-//   "net"    — Rank.NetAllowed
-//   "llm"    — Rank.LLMAllowed
-//   "fs"     — Rank has at least one FS read OR write prefix
-//   "memory" — Rank.MemoryAllowed (memory/put/get/list/delete)
+//   "net"     — Rank.NetAllowed
+//   "llm"     — Rank.LLMAllowed
+//   "fs"      — Rank has at least one FS read OR write prefix
+//   "memory"  — Rank.MemoryAllowed (memory/put/get/list/delete)
+//   "ai_tool" — Rank.AIToolAllowed (ai_tool/invoke — Claude Code et al.)
 func (r *Rank) Capabilities() []string {
 	var caps []string
 	if r.NetAllowed {
@@ -84,6 +90,9 @@ func (r *Rank) Capabilities() []string {
 	}
 	if r.MemoryAllowed {
 		caps = append(caps, "memory")
+	}
+	if r.AIToolAllowed {
+		caps = append(caps, "ai_tool")
 	}
 	return caps
 }
@@ -139,9 +148,10 @@ func DefaultRegistry() *Registry {
 		NetAllowed:    true,
 		LLMAllowed:    true,
 		MemoryAllowed: true,
+		AIToolAllowed: true,
 		Quota: Quota{
 			Tokens:   map[string]int{"gpt-4o-mini": 5000},
-			APICalls: map[string]int{"http": 20},
+			APICalls: map[string]int{"http": 20, "ai_tool:claude-code": 10},
 		},
 	}
 	r.ranks["manager"] = &Rank{
@@ -151,9 +161,10 @@ func DefaultRegistry() *Registry {
 		NetAllowed:    true,
 		LLMAllowed:    true,
 		MemoryAllowed: true,
+		AIToolAllowed: true,
 		Quota: Quota{
 			Tokens:   map[string]int{"gpt-4o-mini": 50000},
-			APICalls: map[string]int{"http": 200},
+			APICalls: map[string]int{"http": 200, "ai_tool:claude-code": 100},
 		},
 	}
 	r.ranks["director"] = &Rank{
@@ -163,6 +174,7 @@ func DefaultRegistry() *Registry {
 		NetAllowed:    true,
 		LLMAllowed:    true,
 		MemoryAllowed: true,
+		AIToolAllowed: true,
 		// Director has unlimited quota; we signal that by leaving maps nil,
 		// and the proxy layer treats "no limit entry" as "unlimited". See
 		// quota.Actor.Consume.

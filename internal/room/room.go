@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -122,6 +123,13 @@ func New(id, name string, hooks Hooks) (*Room, error) {
 	if err := os.MkdirAll(logsDir, 0o750); err != nil {
 		return nil, fmt.Errorf("mkdir logs: %w", err)
 	}
+	// Every Room gets a workspace dir — it's the default inbox/outbox
+	// bind-mounted into every hired Agent's /workspace and used as cwd
+	// for ai_tool/invoke. Created eagerly so the daemon can mount it
+	// without doing lazy-mkdir in the hot path.
+	if err := os.MkdirAll(ipc.WorkspaceDir(id), 0o750); err != nil {
+		return nil, fmt.Errorf("mkdir workspace: %w", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Room{
 		ID:      id,
@@ -175,8 +183,13 @@ type HireOpts struct {
 	Rank          *rank.Rank
 	QuotaOverride *rank.Quota // nil means "use Rank.Quota defaults"
 	Mounts        []ns.Mount  // extra bind mounts inside the sandbox (volumes)
-	LogFile       *os.File
-	ExtraEnv      []string
+	// LogFile receives the Agent's stderr. Use a concrete *os.File if you
+	// want the kernel to splice stderr directly (fastest path); use any
+	// other io.WriteCloser (e.g. the daemon's rotating log) and os/exec
+	// will insert its own copy goroutine — Hire closes the writer when
+	// the Agent exits so ownership is unambiguous.
+	LogFile  io.WriteCloser
+	ExtraEnv []string
 }
 
 // Hire spawns an Agent process and attaches it to this Room.
@@ -195,7 +208,7 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 	}
 	r.mu.Unlock()
 
-	cmd, err := ns.NewAgentCommand(r.Rootfs, img.Dir, img.Manifest.Entry, opts.Mounts)
+	cmd, initErrPipe, err := ns.NewAgentCommand(r.Rootfs, img.Dir, img.Manifest.Entry, opts.Mounts)
 	if err != nil {
 		return nil, fmt.Errorf("build sandbox cmd: %w", err)
 	}
@@ -211,7 +224,7 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 		cmd.Stderr = os.Stderr
 	}
 
-	conn := agent.New(img.Manifest.Name, cmd)
+	conn := agent.New(img.Manifest.Name, cmd, initErrPipe)
 
 	member := &Member{
 		Image:         img.Ref(),
@@ -232,6 +245,18 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 		return nil, fmt.Errorf("start agent: %w", err)
 	}
 
+	// The sandbox init helper runs in the child between fork and the real
+	// Agent exec; if it fails (pivot_root / mount errors) the child dies
+	// immediately with a diagnostic written to FD 3. Block here until the
+	// helper reports either success or a concrete reason so AgentHire
+	// surfaces "pivot_root: operation not permitted" instead of the caller
+	// later tripping over a generic "agent exited".
+	if err := conn.WaitInit(); err != nil {
+		_ = conn.Kill()
+		<-conn.Done()
+		return nil, fmt.Errorf("sandbox init: %w", err)
+	}
+
 	r.mu.Lock()
 	r.members[img.Manifest.Name] = member
 	r.mu.Unlock()
@@ -241,13 +266,19 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 		r.Hooks.OnStatus("agent_spawned", img.Manifest.Name, map[string]any{"rank": rk.Name})
 	}
 
-	// Reap when the Agent exits.
+	// Reap when the Agent exits. cmd.Wait (inside conn.waitLoop) has
+	// already joined os/exec's stderr-copy goroutine by the time Done
+	// fires, so closing LogFile here is race-free — last bytes flushed
+	// before the close hits.
 	go func() {
 		<-conn.Done()
 		r.router.Unregister(img.Manifest.Name)
 		r.mu.Lock()
 		delete(r.members, img.Manifest.Name)
 		r.mu.Unlock()
+		if logFile != nil {
+			_ = logFile.Close()
+		}
 		if r.Hooks.OnStatus != nil {
 			info := map[string]any{}
 			if err := conn.ExitErr(); err != nil {

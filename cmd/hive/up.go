@@ -32,6 +32,23 @@ func cmdUp(ctx context.Context, args []string) {
 	}
 	src := args[0]
 
+	var roomOverride string
+	for i := 1; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--room" && i+1 < len(args):
+			roomOverride = args[i+1]
+			if roomOverride == "" {
+				fmt.Fprintln(os.Stderr, "up: --room requires a non-empty name")
+				os.Exit(2)
+			}
+			i++
+		default:
+			fmt.Fprintf(os.Stderr, "up: unknown argument %q\n", a)
+			os.Exit(2)
+		}
+	}
+
 	hfPath := src
 	if looksRemoteRef(src) {
 		// Download Hivefile.yaml to a temp file, then fall through.
@@ -54,7 +71,11 @@ func cmdUp(ctx context.Context, args []string) {
 	defer c.Close()
 
 	// 1. Init Room.
-	raw, err := c.Call(ctx, ipc.MethodRoomInit, ipc.RoomInitParams{Name: hf.Room})
+	roomName := hf.Room
+	if roomOverride != "" {
+		roomName = roomOverride
+	}
+	raw, err := c.Call(ctx, ipc.MethodRoomInit, ipc.RoomInitParams{Name: roomName})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "up/init: %v\n", err)
 		os.Exit(1)

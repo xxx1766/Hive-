@@ -17,7 +17,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -51,22 +53,40 @@ type Conn struct {
 
 	done    chan struct{}
 	exitErr error
+
+	// initErrPipe is the read end of the sandbox init helper's error pipe
+	// (ns.NewAgentCommand attaches the write end as child FD 3). nil when
+	// sandboxing is disabled. The init helper closes its end either after
+	// writing a failure blob or right before syscall.Exec — in both cases
+	// readInitErrPipe unblocks and stores the result in initErrData.
+	initErrPipe *os.File
+	initErrData []byte
+	initErrDone chan struct{}
 }
 
 // New returns a Conn around cmd. cmd must not be started yet; the caller
 // should finish configuring SysProcAttr (e.g. namespace cloneflags) before
-// calling Start.
-func New(imageName string, cmd *exec.Cmd) *Conn {
+// calling Start. initErrPipe, if non-nil, is the read end of the sandbox
+// init-error pipe (see ns.NewAgentCommand); Start closes it after draining.
+func New(imageName string, cmd *exec.Cmd, initErrPipe *os.File) *Conn {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Conn{
-		ImageName: imageName,
-		cmd:       cmd,
-		pending:   make(map[int64]chan *protocol.Message),
-		handlers:  make(map[string]Handler),
-		ctx:       ctx,
-		cancel:    cancel,
-		done:      make(chan struct{}),
+	c := &Conn{
+		ImageName:   imageName,
+		cmd:         cmd,
+		pending:     make(map[int64]chan *protocol.Message),
+		handlers:    make(map[string]Handler),
+		ctx:         ctx,
+		cancel:      cancel,
+		done:        make(chan struct{}),
+		initErrPipe: initErrPipe,
+		initErrDone: make(chan struct{}),
 	}
+	if initErrPipe == nil {
+		// No pipe ⇒ nothing to wait for; close immediately so WaitInit
+		// and waitLoop don't block.
+		close(c.initErrDone)
+	}
+	return c
 }
 
 // Handle registers a handler for an Agent→Hive method.
@@ -95,12 +115,57 @@ func (c *Conn) Start() error {
 	c.wr = protocol.NewWriter(stdin)
 
 	if err := c.cmd.Start(); err != nil {
+		if c.initErrPipe != nil {
+			_ = c.initErrPipe.Close()
+			close(c.initErrDone)
+		}
 		return fmt.Errorf("start: %w", err)
+	}
+
+	// The child inherited its own copies of every ExtraFiles entry; the
+	// parent must close its originals or the pipes' write sides never see
+	// EOF (the child is the only legitimate writer).
+	for _, f := range c.cmd.ExtraFiles {
+		_ = f.Close()
+	}
+
+	if c.initErrPipe != nil {
+		go c.readInitErrPipe()
 	}
 
 	go c.readLoop()
 	go c.waitLoop()
 	return nil
+}
+
+// readInitErrPipe drains the sandbox init helper's error pipe until EOF.
+// EOF with zero bytes ⇒ sandbox setup succeeded (helper closed its end
+// before syscall.Exec). Non-empty bytes ⇒ setup failed and the helper
+// wrote the reason before exit(1).
+func (c *Conn) readInitErrPipe() {
+	defer close(c.initErrDone)
+	const maxBytes = 4096 // plenty for a stack trace; bounded for safety
+	data, _ := io.ReadAll(io.LimitReader(c.initErrPipe, maxBytes))
+	_ = c.initErrPipe.Close()
+	c.mu.Lock()
+	c.initErrData = data
+	c.mu.Unlock()
+}
+
+// WaitInit blocks until the sandbox init helper finishes (either by
+// closing FD 3 on success or by writing a diagnostic and exiting). Returns
+// a non-nil error iff the helper reported a setup failure — callers should
+// treat that as the hire failing even though cmd.Start() reported success.
+// Safe to call when sandboxing is disabled (returns nil immediately).
+func (c *Conn) WaitInit() error {
+	<-c.initErrDone
+	c.mu.Lock()
+	data := c.initErrData
+	c.mu.Unlock()
+	if len(data) == 0 {
+		return nil
+	}
+	return errors.New(strings.TrimSpace(string(data)))
 }
 
 // Done returns a channel closed when the Agent has exited.
@@ -236,7 +301,18 @@ func (c *Conn) dispatch(msg *protocol.Message) {
 }
 
 func (c *Conn) waitLoop() {
-	c.exitErr = c.cmd.Wait()
+	err := c.cmd.Wait()
+	// If the init helper wrote to FD 3 before dying, enrich the exit
+	// error with its diagnostic. readInitErrPipe is guaranteed to finish
+	// by the time Wait returns (child exit → pipe write side closed → EOF).
+	<-c.initErrDone
+	c.mu.Lock()
+	data := c.initErrData
+	c.mu.Unlock()
+	if err != nil && len(data) > 0 {
+		err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(data)))
+	}
+	c.exitErr = err
 	c.cancel()
 	close(c.done)
 	// Fail any pending calls.

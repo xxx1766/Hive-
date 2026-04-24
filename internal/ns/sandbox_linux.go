@@ -49,27 +49,41 @@ const EnvNoSandbox = "HIVE_NO_SANDBOX"
 // extraMounts are additional bind mounts the init helper will set up
 // (beneath rootfs, before pivot_root). Typically one per Hivefile
 // `volumes:` entry. Nil/empty means no extra mounts.
-func NewAgentCommand(rootfs, imageDir, relEntry string, extraMounts []Mount) (*exec.Cmd, error) {
+//
+// The second return value is the read end of an init-error pipe: RunInit
+// writes any setup failure to FD 3 (the corresponding write end) before
+// exit; on success it closes FD 3 right before syscall.Exec so the real
+// Agent binary never sees it. Callers read this pipe to get a real error
+// message instead of a generic "exit status 1". Returned pipe is nil when
+// sandboxing is disabled (HIVE_NO_SANDBOX=1).
+func NewAgentCommand(rootfs, imageDir, relEntry string, extraMounts []Mount) (*exec.Cmd, *os.File, error) {
 	if os.Getenv(EnvNoSandbox) == "1" {
-		return exec.Command(filepath.Join(imageDir, relEntry)), nil
+		return exec.Command(filepath.Join(imageDir, relEntry)), nil, nil
 	}
 	self, err := os.Executable()
 	if err != nil {
-		return nil, fmt.Errorf("resolve self: %w", err)
+		return nil, nil, fmt.Errorf("resolve self: %w", err)
 	}
 	argv := []string{self, initSentinel, rootfs, imageDir, relEntry}
 	if len(extraMounts) > 0 {
 		b, err := json.Marshal(extraMounts)
 		if err != nil {
-			return nil, fmt.Errorf("encode extra mounts: %w", err)
+			return nil, nil, fmt.Errorf("encode extra mounts: %w", err)
 		}
 		argv = append(argv, string(b))
+	}
+	initErrR, initErrW, err := os.Pipe()
+	if err != nil {
+		return nil, nil, fmt.Errorf("init-err pipe: %w", err)
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: syscall.CLONE_NEWNS | syscall.CLONE_NEWNET,
 	}
-	return cmd, nil
+	// ExtraFiles[0] → child FD 3. Caller (agent.Conn.Start) closes the
+	// parent's copy after cmd.Start so EOF propagates when the child exits.
+	cmd.ExtraFiles = []*os.File{initErrW}
+	return cmd, initErrR, nil
 }
 
 // IsInitMode reports whether the current process was re-execed by
@@ -81,10 +95,27 @@ func IsInitMode() bool {
 // RunInit performs namespace setup and exec's the Agent. Called from
 // hived's main() when IsInitMode() returns true. Never returns on success
 // (calls syscall.Exec); calls os.Exit(1) on failure.
+//
+// A copy of every failure is also written to FD 3 — the parent attaches
+// a pipe there via NewAgentCommand so it can surface a real error string
+// through the AgentHire RPC instead of a generic "exit status 1".
 func RunInit() {
-	if len(os.Args) < 5 {
-		fmt.Fprintln(os.Stderr, "hive-init: expected [sentinel rootfs imageDir relEntry]")
+	// FD 3 is the init-err pipe set up by the parent via cmd.ExtraFiles.
+	// Nil only in the (unlikely) case it was never attached — treat all
+	// writes as best-effort so the stderr fallback remains the source of
+	// truth for log-file diagnostics.
+	initErr := os.NewFile(3, "hive-init-err")
+	fail := func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, "hive-init "+format, args...)
+		if initErr != nil {
+			fmt.Fprintf(initErr, format, args...)
+			_ = initErr.Close()
+		}
 		os.Exit(1)
+	}
+
+	if len(os.Args) < 5 {
+		fail("expected [sentinel rootfs imageDir relEntry]\n")
 	}
 	rootfs := os.Args[2]
 	imageDir := os.Args[3]
@@ -92,19 +123,27 @@ func RunInit() {
 	var extraMounts []Mount
 	if len(os.Args) >= 6 {
 		if err := json.Unmarshal([]byte(os.Args[5]), &extraMounts); err != nil {
-			fmt.Fprintf(os.Stderr, "hive-init: parse extra mounts: %v\n", err)
-			os.Exit(1)
+			fail("parse extra mounts: %v\n", err)
 		}
 	}
 
 	if err := setupSandbox(rootfs, imageDir, extraMounts); err != nil {
-		fmt.Fprintf(os.Stderr, "hive-init setup: %v\n", err)
-		os.Exit(1)
+		fail("setup: %v\n", err)
+	}
+
+	// Sandbox is ready. Close the init-err pipe so the parent's read side
+	// sees EOF with zero bytes — that's how WaitInit distinguishes success
+	// from failure. Must happen before syscall.Exec or the real Agent
+	// would inherit FD 3.
+	if initErr != nil {
+		_ = initErr.Close()
 	}
 
 	entry := filepath.Join("/app", relEntry)
 	argv := []string{entry}
 	if err := syscall.Exec(entry, argv, os.Environ()); err != nil {
+		// initErr already closed — exec failure is rare (path bind-mounted,
+		// perms validated) and the stderr log still captures it.
 		fmt.Fprintf(os.Stderr, "hive-init exec %s: %v\n", entry, err)
 		os.Exit(1)
 	}
