@@ -104,6 +104,29 @@ func cmdTeam(ctx context.Context, args []string) {
 	tw.Flush()
 }
 
+// parseVolumeFlag accepts "<name>:<mountpoint>" or
+// "<name>:<mountpoint>:<ro|rw>". Mountpoint must be absolute.
+func parseVolumeFlag(s string) (ipc.VolumeMountRef, error) {
+	parts := strings.SplitN(s, ":", 3)
+	if len(parts) < 2 {
+		return ipc.VolumeMountRef{}, fmt.Errorf("--volume expects <name>:<mountpoint>[:<ro|rw>], got %q", s)
+	}
+	mode := "ro"
+	if len(parts) == 3 {
+		if parts[2] != "ro" && parts[2] != "rw" {
+			return ipc.VolumeMountRef{}, fmt.Errorf("--volume mode must be ro|rw, got %q", parts[2])
+		}
+		mode = parts[2]
+	}
+	if parts[0] == "" {
+		return ipc.VolumeMountRef{}, fmt.Errorf("--volume: name cannot be empty")
+	}
+	if len(parts[1]) == 0 || parts[1][0] != '/' {
+		return ipc.VolumeMountRef{}, fmt.Errorf("--volume: mountpoint must be absolute, got %q", parts[1])
+	}
+	return ipc.VolumeMountRef{Name: parts[0], Mode: mode, Mountpoint: parts[1]}, nil
+}
+
 func formatQuota(q map[string]any) string {
 	if len(q) == 0 {
 		return "(unlimited)"
@@ -128,6 +151,7 @@ func cmdHire(ctx context.Context, args []string) {
 
 	rank := ""
 	var quotaRaw json.RawMessage
+	var volumes []ipc.VolumeMountRef
 	for i := 2; i < len(args); i++ {
 		switch args[i] {
 		case "--rank":
@@ -147,6 +171,18 @@ func cmdHire(ctx context.Context, args []string) {
 				os.Exit(2)
 			}
 			quotaRaw = json.RawMessage(args[i+1])
+			i++
+		case "--volume":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "hire: --volume requires <name>:<mountpoint>[:<ro|rw>]")
+				os.Exit(2)
+			}
+			v, err := parseVolumeFlag(args[i+1])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "hire: %v\n", err)
+				os.Exit(2)
+			}
+			volumes = append(volumes, v)
 			i++
 		}
 	}
@@ -172,6 +208,7 @@ func cmdHire(ctx context.Context, args []string) {
 		Image:      ipc.ImageRef{Name: ref.Name, Version: ref.Version},
 		RankName:   rank,
 		QuotaOverr: quotaRaw,
+		Volumes:    volumes,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hire: %v\n", err)

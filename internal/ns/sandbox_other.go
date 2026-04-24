@@ -11,7 +11,14 @@ import (
 // (see DEMO_PLAN.md), but keeping a compile-clean stub lets developers run
 // `go vet` / editor tooling on macOS without errors.
 
-func NewAgentCommand(rootfs, imageDir, relEntry string) (*exec.Cmd, error) {
+// Mount mirrors the Linux-side type so callers compile cleanly.
+type Mount struct {
+	Source   string
+	Target   string
+	ReadOnly bool
+}
+
+func NewAgentCommand(rootfs, imageDir, relEntry string, extraMounts []Mount) (*exec.Cmd, error) {
 	return exec.Command(filepath.Join(imageDir, relEntry)), nil
 }
 

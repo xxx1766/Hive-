@@ -19,17 +19,17 @@ trap cleanup EXIT
 
 say() { printf "\n\033[1;34m▶\033[0m %s\n" "$*"; }
 
-say "1/12 build"
+say "1/13 build"
 make build >/dev/null
 rm -rf "$HIVE_STATE"
 mkdir -p "$HIVE_STATE"
 
-say "2/12 start local HTTP server on :8991 (so the fetch demo is offline-safe)"
+say "2/13 start local HTTP server on :8991 (so the fetch demo is offline-safe)"
 python3 -m http.server 8991 --directory /tmp >/dev/null 2>&1 &
 HTTP_PID=$!
 sleep 0.3
 
-say "3/12 start hived"
+say "3/13 start hived"
 ./bin/hived >"$HIVE_STATE/daemon.log" 2>&1 &
 HIVED_PID=$!
 for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -38,19 +38,19 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 ./bin/hive ping
 
-say "4/12 build four Agent images (3 binary + 1 skill)"
+say "4/13 build four Agent images (3 binary + 1 skill)"
 ./bin/hive build ./examples/fetch     | sed 's/^/  /'
 ./bin/hive build ./examples/upper     | sed 's/^/  /'
 ./bin/hive build ./examples/summarize | sed 's/^/  /'
 ./bin/hive build ./examples/brief     | sed 's/^/  /'
 
-say "5/12 up two Rooms with the same three Agents (namespace-isolated)"
+say "5/13 up two Rooms with the same three Agents (namespace-isolated)"
 ROOM_A=$(./bin/hive up hivefiles/demo/room-a.yaml)
 ROOM_B=$(./bin/hive up hivefiles/demo/room-b.yaml)
 echo "   ROOM_A=$ROOM_A"
 echo "   ROOM_B=$ROOM_B"
 
-say "6/12 Room A: consume fetch quota (intern has 5 http calls)"
+say "6/13 Room A: consume fetch quota (intern has 5 http calls)"
 for i in 1 2 3 4 5; do
     echo "   fetch #$i:"
     ./bin/hive run "$ROOM_A" --target fetch '{"url":"http://127.0.0.1:8991/"}' | \
@@ -67,7 +67,7 @@ else
     echo "   ✗ unexpected: $out"
 fi
 
-say "7/12 Room B: one fetch succeeds (independent quota)"
+say "7/13 Room B: one fetch succeeds (independent quota)"
 ./bin/hive run "$ROOM_B" --target fetch '{"url":"http://127.0.0.1:8991/"}' | \
     grep -E 'output:|INFO' | head -3 | sed 's/^/  /'
 
@@ -77,7 +77,7 @@ say "   summarize in both Rooms (deducts tokens independently)"
 ./bin/hive run "$ROOM_B" --target summarize '{"text":"machine learning is a subset of artificial intelligence"}' | \
     grep -E 'output:|INFO' | head -5 | sed 's/^/  B: /'
 
-say "8/12 kind=skill Agent: a SKILL.md Agent runs via the built-in runner"
+say "8/13 kind=skill Agent: a SKILL.md Agent runs via the built-in runner"
 ROOM_C=$(./bin/hive init skill-demo)
 ./bin/hive hire "$ROOM_C" brief:0.1.0 >/dev/null
 echo "   Room $ROOM_C hired brief:0.1.0 (kind=skill, SKILL.md driven)"
@@ -85,7 +85,7 @@ echo "   Room $ROOM_C hired brief:0.1.0 (kind=skill, SKILL.md driven)"
     grep -E 'output:|INFO' | head -5 | sed 's/^/  brief: /'
 ./bin/hive stop "$ROOM_C" >/dev/null
 
-say "9/12 remote pull: hire a skill Agent from the GitHub-hosted registry"
+say "9/13 remote pull: hire a skill Agent from the GitHub-hosted registry"
 # This scene fetches registry/agents/brief from the live public repo.
 # Requires network access to raw.githubusercontent.com; on failure we
 # warn and continue instead of aborting the demo.
@@ -98,7 +98,7 @@ else
 fi
 ./bin/hive stop "$ROOM_D" >/dev/null 2>&1 || true
 
-say "10/12 kind=workflow: static flow.json (fetch → llm_complete via variable refs)"
+say "10/13 kind=workflow: static flow.json (fetch → llm_complete via variable refs)"
 ./bin/hive build ./examples/url-summary | sed 's/^/  /'
 ROOM_E=$(./bin/hive init workflow-demo)
 ./bin/hive hire "$ROOM_E" url-summary:0.1.0 >/dev/null
@@ -106,7 +106,7 @@ ROOM_E=$(./bin/hive init workflow-demo)
     grep -E 'INFO|output:' | head -5 | sed -E 's/^/  url-summary: /; s/(.{200}).*/\1…/'
 ./bin/hive stop "$ROOM_E" >/dev/null
 
-say "11/12 cross-Room memory: two Rooms share a Volume"
+say "11/13 cross-Room memory: two Rooms share a Volume"
 ./bin/hive build ./examples/memo 2>&1 | sed 's/^/  /'
 ./bin/hive volume create demo-kb 2>&1 | sed 's/^/  /'
 ROOM_M1=$(./bin/hive init memo-room-1)
@@ -115,15 +115,32 @@ ROOM_M2=$(./bin/hive init memo-room-2)
 ./bin/hive hire "$ROOM_M2" memo:0.1.0 >/dev/null
 echo "   Room 1 writes to shared volume 'demo-kb':"
 ./bin/hive run "$ROOM_M1" '{"scope":"demo-kb","key":"from-room-1","value":"hello from room 1"}' | \
-    grep -E 'output:' | head -1 | sed 's/^/  room-1: /; s/(.{180}).*/\1…/'
+    grep -E 'output:' | head -1 | sed -E 's/^/  room-1: /; s/(.{180}).*/\1…/'
 echo "   Room 2 writes its own key + lists all — should see both:"
 ./bin/hive run "$ROOM_M2" '{"scope":"demo-kb","key":"from-room-2","value":"hello from room 2"}' | \
-    grep -E 'output:' | head -1 | sed 's/^/  room-2: /; s/(.{180}).*/\1…/'
+    grep -E 'output:' | head -1 | sed -E 's/^/  room-2: /; s/(.{180}).*/\1…/'
 ./bin/hive stop "$ROOM_M1" >/dev/null
 ./bin/hive stop "$ROOM_M2" >/dev/null
 ./bin/hive volume rm demo-kb >/dev/null
 
-say "12/12 team snapshots: observe per-Room quota divergence"
+say "12/13 fs mount: two Rooms share a Volume via bind-mount (raw fs_read/fs_write)"
+./bin/hive build ./examples/blob 2>&1 | sed 's/^/  /'
+./bin/hive volume create fs-kb 2>&1 | sed 's/^/  /'
+ROOM_B1=$(./bin/hive init fs-room-1)
+ROOM_B2=$(./bin/hive init fs-room-2)
+./bin/hive hire "$ROOM_B1" blob:0.1.0 --volume fs-kb:/shared/kb:rw >/dev/null
+./bin/hive hire "$ROOM_B2" blob:0.1.0 --volume fs-kb:/shared/kb:rw >/dev/null
+echo "   Room 1 writes /shared/kb/paper-1.txt via fs_write:"
+./bin/hive run "$ROOM_B1" '{"path":"/shared/kb/paper-1.txt","content":"room 1 wrote this","dir":"/shared/kb"}' | \
+    grep -E 'output:' | head -1 | sed -E 's/^/  room-1: /; s/(.{180}).*/\1…/'
+echo "   Room 2 writes another + lists — sees Room 1's file too:"
+./bin/hive run "$ROOM_B2" '{"path":"/shared/kb/paper-2.txt","content":"room 2 wrote this","dir":"/shared/kb"}' | \
+    grep -E 'output:' | head -1 | sed -E 's/^/  room-2: /; s/(.{200}).*/\1…/'
+./bin/hive stop "$ROOM_B1" >/dev/null
+./bin/hive stop "$ROOM_B2" >/dev/null
+./bin/hive volume rm fs-kb >/dev/null
+
+say "13/13 team snapshots: observe per-Room quota divergence"
 printf "  \033[1mRoom A:\033[0m\n"
 ./bin/hive team "$ROOM_A" | sed 's/^/    /'
 printf "\n  \033[1mRoom B:\033[0m\n"

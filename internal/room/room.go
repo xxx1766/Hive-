@@ -35,13 +35,16 @@ const (
 
 // Member tracks a hired Agent within a Room.
 type Member struct {
-	Image   image.Ref
-	Rank    *rank.Rank
+	Image image.Ref
+	Rank  *rank.Rank
 	// QuotaOverride is set when Hivefile / CLI overrides the Rank's default
 	// quota for this specific hire. nil ⇒ use Rank.Quota unchanged.
 	QuotaOverride *rank.Quota
-	Conn          *agent.Conn
-	HiredAt       time.Time
+	// Mounts records the volumes bind-mounted into this Agent's sandbox.
+	// The daemon uses it to construct the Agent's effective FS allow-list.
+	Mounts  []ns.Mount
+	Conn    *agent.Conn
+	HiredAt time.Time
 }
 
 // EffectiveQuota merges the Rank's default quota with any per-hire override.
@@ -171,6 +174,7 @@ func (r *Room) Member(imageName string) *Member {
 type HireOpts struct {
 	Rank          *rank.Rank
 	QuotaOverride *rank.Quota // nil means "use Rank.Quota defaults"
+	Mounts        []ns.Mount  // extra bind mounts inside the sandbox (volumes)
 	LogFile       *os.File
 	ExtraEnv      []string
 }
@@ -191,7 +195,7 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 	}
 	r.mu.Unlock()
 
-	cmd, err := ns.NewAgentCommand(r.Rootfs, img.Dir, img.Manifest.Entry)
+	cmd, err := ns.NewAgentCommand(r.Rootfs, img.Dir, img.Manifest.Entry, opts.Mounts)
 	if err != nil {
 		return nil, fmt.Errorf("build sandbox cmd: %w", err)
 	}
@@ -213,6 +217,7 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 		Image:         img.Ref(),
 		Rank:          rk,
 		QuotaOverride: opts.QuotaOverride,
+		Mounts:        opts.Mounts,
 		Conn:          conn,
 		HiredAt:       time.Now(),
 	}

@@ -85,11 +85,19 @@ func cmdUp(ctx context.Context, args []string) {
 			quotaRaw = b
 		}
 
+		var vols []ipc.VolumeMountRef
+		for _, v := range a.Volumes {
+			vols = append(vols, ipc.VolumeMountRef{
+				Name: v.Name, Mode: v.Mode, Mountpoint: v.Mountpoint,
+			})
+		}
+
 		_, err = c.Call(ctx, ipc.MethodAgentHire, ipc.AgentHireParams{
 			RoomID:     init.RoomID,
 			Image:      ipc.ImageRef{Name: ref.Name, Version: ref.Version},
 			RankName:   a.Rank,
 			QuotaOverr: quotaRaw,
+			Volumes:    vols,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "up/hire %s: %v\n", a.Image, err)

@@ -1,0 +1,21 @@
+{
+  "description": "Write a blob into a bind-mounted Volume, then list the dir so callers can see what's there. Hire with `--volume <name>:<mountpoint>:rw` and set $input.path + $input.dir to paths under that mountpoint.",
+  "steps": [
+    {
+      "id": "write",
+      "tool": "fs_write",
+      "args": {
+        "path":    "$input.path",
+        "content": "$input.content"
+      }
+    },
+    {
+      "id": "list",
+      "tool": "fs_list",
+      "args": {
+        "path": "$input.dir"
+      }
+    }
+  ],
+  "output": "$steps.list"
+}

@@ -228,6 +228,27 @@ hive run  "$ROOM1" '{"scope":"","key":"my-secret","value":"only-room-1"}'
 
 完整设计在 [`../README.md`](../README.md#volume--跨-room-共享记忆) 的 §Volume 节。
 
+### 文件级共享（fs_read / fs_write）
+
+有些场景（写大文件、图片、PDF、或者一堆文件的目录）不适合走 KV，直接拿文件系统更顺手。Volume 可以被 bind-mount 进 Agent 的 sandbox：
+
+```bash
+# 一次性（CLI）
+hive hire my-room my-agent:0.1.0 --volume kb:/shared/kb:rw
+```
+
+```yaml
+# Hivefile
+agents:
+  - image: my-agent:0.1.0
+    volumes:
+      - {name: kb, mountpoint: /shared/kb, mode: rw}
+```
+
+Agent 直接 `fs_write("/shared/kb/paper.pdf", ...)`，daemon 把路径重定向到 `~/.hive/volumes/kb/paper.pdf`。两个 Room 挂同一个 volume 就能互相看到对方写的文件。Rank 的 FSRead/FSWrite 自动扩 mountpoint，不用单独声明。
+
+参考：`examples/blob/`；`scripts/demo.sh` 场景 12。
+
 ## 8. 发布你的 Agent 到公共 Registry
 
 直接往本仓库发 PR 到 `registry/agents/<your-agent>/` 即可（MVP 简化方案）。未来会拆到独立 repo。

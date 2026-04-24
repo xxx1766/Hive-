@@ -16,12 +16,22 @@
 package ns
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"syscall"
 )
+
+// Mount is an extra bind mount requested by the caller (typically one
+// entry per Hivefile `volumes:` item). Source is a host path; Target is
+// an absolute path inside the sandbox. ReadOnly adds MS_RDONLY on remount.
+type Mount struct {
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	ReadOnly bool   `json:"ro,omitempty"`
+}
 
 // initSentinel is the reserved first arg recognised by RunInit.
 // Chosen to be unlikely to collide with any legitimate subcommand.
@@ -35,7 +45,11 @@ const EnvNoSandbox = "HIVE_NO_SANDBOX"
 // Agent inside a private mount+network namespace rooted at rootfs.
 // imageDir is bind-mounted read-only at /app inside the sandbox; relEntry
 // is the path to the Agent binary relative to imageDir.
-func NewAgentCommand(rootfs, imageDir, relEntry string) (*exec.Cmd, error) {
+//
+// extraMounts are additional bind mounts the init helper will set up
+// (beneath rootfs, before pivot_root). Typically one per Hivefile
+// `volumes:` entry. Nil/empty means no extra mounts.
+func NewAgentCommand(rootfs, imageDir, relEntry string, extraMounts []Mount) (*exec.Cmd, error) {
 	if os.Getenv(EnvNoSandbox) == "1" {
 		return exec.Command(filepath.Join(imageDir, relEntry)), nil
 	}
@@ -43,7 +57,15 @@ func NewAgentCommand(rootfs, imageDir, relEntry string) (*exec.Cmd, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve self: %w", err)
 	}
-	cmd := exec.Command(self, initSentinel, rootfs, imageDir, relEntry)
+	argv := []string{self, initSentinel, rootfs, imageDir, relEntry}
+	if len(extraMounts) > 0 {
+		b, err := json.Marshal(extraMounts)
+		if err != nil {
+			return nil, fmt.Errorf("encode extra mounts: %w", err)
+		}
+		argv = append(argv, string(b))
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: syscall.CLONE_NEWNS | syscall.CLONE_NEWNET,
 	}
@@ -67,8 +89,15 @@ func RunInit() {
 	rootfs := os.Args[2]
 	imageDir := os.Args[3]
 	relEntry := os.Args[4]
+	var extraMounts []Mount
+	if len(os.Args) >= 6 {
+		if err := json.Unmarshal([]byte(os.Args[5]), &extraMounts); err != nil {
+			fmt.Fprintf(os.Stderr, "hive-init: parse extra mounts: %v\n", err)
+			os.Exit(1)
+		}
+	}
 
-	if err := setupSandbox(rootfs, imageDir); err != nil {
+	if err := setupSandbox(rootfs, imageDir, extraMounts); err != nil {
 		fmt.Fprintf(os.Stderr, "hive-init setup: %v\n", err)
 		os.Exit(1)
 	}
@@ -86,7 +115,7 @@ func RunInit() {
 // except for the kernel's default state (no interfaces, not even loopback
 // is up — that's intentional, it forces all network I/O through Hive's
 // proxy). The Agent binary is reachable at /app/<relEntry>.
-func setupSandbox(rootfs, imageDir string) error {
+func setupSandbox(rootfs, imageDir string, extraMounts []Mount) error {
 	// 1. Make the mount tree private so our work doesn't leak to the host.
 	//    Even though CLONE_NEWNS gives us a copy, shared subtrees would
 	//    still propagate; MS_PRIVATE severs that.
@@ -151,7 +180,34 @@ func setupSandbox(rootfs, imageDir string) error {
 		return fmt.Errorf("mount proc: %w", err)
 	}
 
-	// 7. pivot_root: new_root = rootfs, put_old = rootfs/.pivot_root.
+	// 7. Extra bind mounts (typically one per Hivefile volume entry).
+	//    Done BEFORE pivot_root so the host source paths are still
+	//    reachable. Target is an absolute path inside the sandbox
+	//    (e.g. /shared/kb), which we translate to <rootfs>/<target>.
+	for _, m := range extraMounts {
+		if m.Source == "" || m.Target == "" {
+			return fmt.Errorf("extra mount: source and target are required (%+v)", m)
+		}
+		if m.Target[0] != '/' {
+			return fmt.Errorf("extra mount target must be absolute: %q", m.Target)
+		}
+		dst := filepath.Join(rootfs, m.Target)
+		if err := os.MkdirAll(dst, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", dst, err)
+		}
+		if err := syscall.Mount(m.Source, dst, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
+			return fmt.Errorf("bind %s → %s: %w", m.Source, dst, err)
+		}
+		if m.ReadOnly {
+			// Same remount-ro trick as the /usr bind mounts above —
+			// MS_BIND|MS_REMOUNT|MS_RDONLY in a second Mount call.
+			if err := syscall.Mount("", dst, "", syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_RDONLY, ""); err != nil {
+				return fmt.Errorf("remount ro %s: %w", dst, err)
+			}
+		}
+	}
+
+	// 8. pivot_root: new_root = rootfs, put_old = rootfs/.pivot_root.
 	pivotOld := filepath.Join(rootfs, ".pivot_root")
 	if err := os.MkdirAll(pivotOld, 0o700); err != nil {
 		return fmt.Errorf("mkdir pivot_old: %w", err)

@@ -1,0 +1,9 @@
+name: blob
+version: 0.1.0
+kind: workflow
+workflow: flow.json
+rank: staff
+tools: [fs]
+capabilities:
+  requires: [fs]
+  provides: [blob]

@@ -9,12 +9,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/anne-x/hive/internal/image"
 	"github.com/anne-x/hive/internal/ipc"
+	"github.com/anne-x/hive/internal/ns"
 	"github.com/anne-x/hive/internal/protocol"
 	"github.com/anne-x/hive/internal/proxy/fsproxy"
 	"github.com/anne-x/hive/internal/proxy/llmproxy"
@@ -142,7 +144,36 @@ func (d *Daemon) installAgentProxies(r *room.Room, m *room.Member) {
 		}, v)
 	}
 
-	fs := &fsproxy.Proxy{RoomRootfs: r.Rootfs, Rank: m.Rank}
+	// If the Agent has mounted volumes, build an effective Rank that
+	// includes the mountpoints in its FSRead/FSWrite allow-list. The
+	// proxy also needs redirect entries so agent-side paths resolve to
+	// the real on-disk volume location (fsproxy runs in the daemon's
+	// namespace, not the Agent's — bind-mounts are invisible to it
+	// unless we hand them over explicitly).
+	fsRank := m.Rank
+	var fsMounts []fsproxy.MountRedirect
+	if len(m.Mounts) > 0 {
+		cloned := *m.Rank
+		cloned.FSRead = append([]string{}, m.Rank.FSRead...)
+		cloned.FSWrite = append([]string{}, m.Rank.FSWrite...)
+		for _, mnt := range m.Mounts {
+			cloned.FSRead = append(cloned.FSRead, mnt.Target)
+			if !mnt.ReadOnly {
+				cloned.FSWrite = append(cloned.FSWrite, mnt.Target)
+			}
+			fsMounts = append(fsMounts, fsproxy.MountRedirect{
+				AgentPath: mnt.Target,
+				HostPath:  mnt.Source,
+			})
+		}
+		fsRank = &cloned
+	}
+	// Sort longest-prefix-first so nested mounts resolve correctly
+	// (e.g. /shared/kb/docs beats /shared/kb).
+	sort.SliceStable(fsMounts, func(i, j int) bool {
+		return len(fsMounts[i].AgentPath) > len(fsMounts[j].AgentPath)
+	})
+	fs := &fsproxy.Proxy{RoomRootfs: r.Rootfs, Rank: fsRank, Mounts: fsMounts}
 	net := &netproxy.Proxy{RoomID: r.ID, AgentName: m.Image.Name, Rank: m.Rank, Quota: d.quota}
 	llm := &llmproxy.Proxy{RoomID: r.ID, AgentName: m.Image.Name, Rank: m.Rank, Quota: d.quota, Provider: d.llmProvider}
 	mem := &memproxy.Proxy{
@@ -504,9 +535,30 @@ func (d *Daemon) handleAgentHire(ctx context.Context, params json.RawMessage, _ 
 		quotaOverride = &q
 	}
 
+	// Resolve requested volumes. Fail fast with a clear error if a name
+	// doesn't exist — better than letting the Agent crash at fs_read time.
+	var mounts []ns.Mount
+	for _, v := range p.Volumes {
+		vol, err := d.volumes.Get(v.Name)
+		if err != nil {
+			return nil, protocol.NewError(protocol.ErrCodeInvalidParams,
+				fmt.Sprintf("volume %q: %v — create with `hive volume create %s`", v.Name, err, v.Name))
+		}
+		mode := v.Mode
+		if mode == "" {
+			mode = "ro"
+		}
+		mounts = append(mounts, ns.Mount{
+			Source:   vol.Path,
+			Target:   v.Mountpoint,
+			ReadOnly: mode == "ro",
+		})
+	}
+
 	m, err := r.Hire(preparedImg, room.HireOpts{
 		Rank:          rk,
 		QuotaOverride: quotaOverride,
+		Mounts:        mounts,
 		LogFile:       logFile,
 		ExtraEnv:      extraEnv,
 	})

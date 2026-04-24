@@ -136,6 +136,67 @@ func TestRelativePathRejected(t *testing.T) {
 	}
 }
 
+// TestMountRedirect: an Agent-side path under a mounted volume must
+// resolve to the volume's on-disk location, NOT to the Room's rootfs.
+// This is the fix for: fsproxy runs outside the Agent's mount ns so
+// the bind-mount is invisible to it without an explicit redirect.
+func TestMountRedirect(t *testing.T) {
+	p, rootfs := makeProxy(t)
+	volDir := t.TempDir()
+	p.Mounts = []MountRedirect{{AgentPath: "/shared/kb", HostPath: volDir}}
+
+	// Extend Rank's allow-list to include the mountpoint (daemon does
+	// this at hire time).
+	p.Rank.FSRead = append(p.Rank.FSRead, "/shared/kb")
+	p.Rank.FSWrite = append(p.Rank.FSWrite, "/shared/kb")
+
+	_, err := p.Write(encode(t, rpc.FsWriteParams{Path: "/shared/kb/file.txt", Data: []byte("hello")}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// File should land in volDir, NOT in rootfs.
+	if _, err := os.Stat(filepath.Join(volDir, "file.txt")); err != nil {
+		t.Fatalf("file not at volume location: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootfs, "shared", "kb", "file.txt")); err == nil {
+		t.Fatal("file leaked into rootfs; mount redirect didn't fire")
+	}
+
+	got, err := p.Read(encode(t, rpc.FsReadParams{Path: "/shared/kb/file.txt"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.(rpc.FsReadResult).Data) != "hello" {
+		t.Fatalf("round-trip via mount failed: %v", got)
+	}
+}
+
+// TestMountRedirect_LongestPrefixWins: when two mounts overlap, the
+// longer AgentPath should win the resolve.
+func TestMountRedirect_LongestPrefixWins(t *testing.T) {
+	p, _ := makeProxy(t)
+	outer := t.TempDir()
+	inner := t.TempDir()
+	p.Mounts = []MountRedirect{
+		{AgentPath: "/shared/kb/docs", HostPath: inner},
+		{AgentPath: "/shared/kb", HostPath: outer},
+	}
+	p.Rank.FSRead = append(p.Rank.FSRead, "/shared/kb")
+	p.Rank.FSWrite = append(p.Rank.FSWrite, "/shared/kb")
+
+	_, err := p.Write(encode(t, rpc.FsWriteParams{Path: "/shared/kb/docs/paper.pdf", Data: []byte("x")}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(inner, "paper.pdf")); err != nil {
+		t.Fatalf("inner mount should have received the file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outer, "docs", "paper.pdf")); err == nil {
+		t.Fatal("outer mount shouldn't have received a path with a longer inner match")
+	}
+}
+
 // TestCrossRoomIsolation: two Proxies with different rootfs must not see
 // each other's files even if their allow-lists overlap.
 func TestCrossRoomIsolation(t *testing.T) {

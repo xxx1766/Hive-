@@ -20,10 +20,24 @@ import (
 	"github.com/anne-x/hive/internal/rpc"
 )
 
+// MountRedirect records one bind-mount the Agent sees so fsproxy (which
+// runs outside the Agent's mount namespace) can redirect agent-side paths
+// to their real host location. AgentPath is the mountpoint as the Agent
+// sees it (e.g. "/shared/kb"); HostPath is the underlying directory on
+// the host (e.g. "~/.hive/volumes/kb/"). Longest prefix wins.
+type MountRedirect struct {
+	AgentPath string
+	HostPath  string
+}
+
 // Proxy wraps the per-Agent context the handlers need.
 type Proxy struct {
 	RoomRootfs string // absolute path on host
 	Rank       *rank.Rank
+	// Mounts is the sorted-by-AgentPath-length-descending list of
+	// bind-mount redirects. Populated at hire time from the Agent's
+	// declared volumes; empty for Agents with no volumes.
+	Mounts []MountRedirect
 }
 
 // Read reads a file at Agent-perspective path.
@@ -101,16 +115,37 @@ func (p *Proxy) List(params json.RawMessage) (any, error) {
 	return rpc.FsListResult{Entries: out}, nil
 }
 
-// resolve turns an Agent-visible absolute path into a host-side absolute path.
-// Enforces: path must be absolute, must not escape rootfs via '..'.
+// resolve turns an Agent-visible absolute path into a host-side absolute
+// path. Logic:
+//
+//  1. If agentPath is under any mount's AgentPath, redirect to that
+//     mount's HostPath (the Volume's real on-disk location). This is
+//     required because fsproxy runs in the daemon's (host) namespace,
+//     NOT inside the Agent's sandbox — the bind-mounts the init helper
+//     sets up are invisible to us unless we do this redirect manually.
+//  2. Otherwise, treat agentPath as a subpath of RoomRootfs and clamp
+//     it there. Defence-in-depth: verify the result still lives inside
+//     RoomRootfs so crafted `..` sequences can't escape.
 func (p *Proxy) resolve(agentPath string) (string, error) {
 	if !strings.HasPrefix(agentPath, "/") {
 		return "", protocol.NewError(protocol.ErrCodeInvalidParams, "path must be absolute: "+agentPath)
 	}
 	cleaned := filepath.Clean(agentPath)
-	// After Clean, "/../x" becomes "/x", so prefix-based containment is safe.
+
+	for _, m := range p.Mounts {
+		if cleaned == m.AgentPath || strings.HasPrefix(cleaned, m.AgentPath+"/") {
+			rel := strings.TrimPrefix(cleaned, m.AgentPath)
+			host := filepath.Join(m.HostPath, rel)
+			// Defence: resolved path must not escape the mount source.
+			if !strings.HasPrefix(host, m.HostPath) {
+				return "", protocol.NewError(protocol.ErrCodeInvalidParams,
+					"path escapes mount source: "+agentPath)
+			}
+			return host, nil
+		}
+	}
+
 	host := filepath.Join(p.RoomRootfs, cleaned)
-	// Defense-in-depth: verify host still starts with rootfs.
 	if !strings.HasPrefix(host, p.RoomRootfs+string(filepath.Separator)) && host != p.RoomRootfs {
 		return "", protocol.NewError(protocol.ErrCodeInvalidParams, "path escapes rootfs: "+agentPath)
 	}

@@ -79,7 +79,7 @@ Quota overrides in the Hivefile ('quota:' under each agent) propagate
 down to the daemon as partial overrides on top of Rank defaults.`,
 	},
 	"hire": {
-		usage: "hive hire <room> <ref> [--rank <name>] [--quota <json>]",
+		usage: "hive hire <room> <ref> [--rank <name>] [--quota <json>] [--volume <name>:<mountpoint>[:<ro|rw>]]...",
 		brief: "hire an Agent into a Room",
 		long: `<ref> may be:
   name:version                             local Image (from the store)
@@ -88,11 +88,15 @@ down to the daemon as partial overrides on top of Rank defaults.`,
   owner/repo#path[@ref]                    short form
 
 Flags:
-  --rank <name>   override the Image's manifest default Rank
-                  (intern / staff / manager / director)
-  --quota <json>  override per-resource quota caps. JSON shape:
-                    {"tokens":{"gpt-4o-mini":500},"api_calls":{"http":5}}
-                  Partial: keys not in the JSON keep the Rank default.`,
+  --rank <name>             override the Image's manifest default Rank
+                            (intern / staff / manager / director)
+  --quota <json>            override per-resource quota caps. JSON shape:
+                              {"tokens":{"gpt-4o-mini":500},"api_calls":{"http":5}}
+                            Partial: keys not in the JSON keep the Rank default.
+  --volume <n>:<mp>[:<m>]   bind-mount a named Volume into the Agent's sandbox.
+                            <n>=volume name (create with 'hive volume create')
+                            <mp>=absolute mountpoint (e.g. /shared/kb)
+                            <m>=ro|rw (default ro). Can be repeated.`,
 	},
 	"team": {
 		usage: "hive team <room>",

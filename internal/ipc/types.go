@@ -111,10 +111,22 @@ type RoomTeamResult struct {
 // ── Agent hire ────────────────────────────────────────────────────────────
 
 type AgentHireParams struct {
-	RoomID     string          `json:"room_id"`
-	Image      ImageRef        `json:"image"`
-	RankName   string          `json:"rank,omitempty"`  // override manifest default
-	QuotaOverr json.RawMessage `json:"quota,omitempty"` // override manifest quota (partial); shape = QuotaOverride
+	RoomID     string            `json:"room_id"`
+	Image      ImageRef          `json:"image"`
+	RankName   string            `json:"rank,omitempty"`   // override manifest default
+	QuotaOverr json.RawMessage   `json:"quota,omitempty"`  // override manifest quota (partial); shape = QuotaOverride
+	Volumes    []VolumeMountRef  `json:"volumes,omitempty"` // bind-mount named volumes into this Agent's sandbox
+}
+
+// VolumeMountRef binds a named Volume into a hired Agent's sandbox.
+//
+//   Name:        volume to mount (must exist; see `hive volume create`)
+//   Mode:        "ro" or "rw"
+//   Mountpoint:  absolute path inside the sandbox
+type VolumeMountRef struct {
+	Name       string `json:"name"`
+	Mode       string `json:"mode,omitempty"` // defaults to "ro"
+	Mountpoint string `json:"mountpoint"`
 }
 
 // QuotaOverride mirrors the manifest's quota shape. Unmarshalled by the

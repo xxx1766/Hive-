@@ -23,9 +23,21 @@ type File struct {
 
 // AgentEntry declares one Agent to hire.
 type AgentEntry struct {
-	Image string         `yaml:"image"`          // name:version
-	Rank  string         `yaml:"rank,omitempty"` // overrides manifest default
-	Quota map[string]any `yaml:"quota,omitempty"`
+	Image   string         `yaml:"image"`          // name:version
+	Rank    string         `yaml:"rank,omitempty"` // overrides manifest default
+	Quota   map[string]any `yaml:"quota,omitempty"`
+	Volumes []VolumeMount  `yaml:"volumes,omitempty"`
+}
+
+// VolumeMount binds a named Volume into the Agent's sandbox.
+//
+//   name:        existing Volume (created via `hive volume create`)
+//   mode:        "ro" (read-only) or "rw" (writable)
+//   mountpoint:  absolute path inside the sandbox where the Volume appears
+type VolumeMount struct {
+	Name       string `yaml:"name"`
+	Mode       string `yaml:"mode"`
+	Mountpoint string `yaml:"mountpoint"`
 }
 
 // Load reads and validates a Hivefile.yaml.
@@ -85,7 +97,51 @@ func (f *File) Validate() error {
 	if f.Entry != "" && !seen[f.Entry] {
 		return fmt.Errorf("entry %q is not one of the hired agents", f.Entry)
 	}
+	// Validate each agent's volume mounts. Iterate by index so Validate's
+	// mutation (default mode=ro) actually persists back into the slice.
+	for i := range f.Agents {
+		for j := range f.Agents[i].Volumes {
+			if err := f.Agents[i].Volumes[j].Validate(); err != nil {
+				return fmt.Errorf("agents[%d].volumes[%d]: %w", i, j, err)
+			}
+		}
+	}
 	return nil
+}
+
+// Validate checks a VolumeMount's shape independent of whether the
+// named Volume exists (that's a daemon-side check at hire time).
+func (v *VolumeMount) Validate() error {
+	if v.Name == "" {
+		return fmt.Errorf("volume.name is required")
+	}
+	if v.Mountpoint == "" {
+		return fmt.Errorf("volume.mountpoint is required")
+	}
+	if v.Mountpoint[0] != '/' {
+		return fmt.Errorf("volume.mountpoint must be absolute, got %q", v.Mountpoint)
+	}
+	if containsDotDot(v.Mountpoint) {
+		return fmt.Errorf("volume.mountpoint must not contain '..': %q", v.Mountpoint)
+	}
+	switch v.Mode {
+	case "ro", "rw":
+	case "":
+		v.Mode = "ro" // safe default
+	default:
+		return fmt.Errorf("volume.mode must be ro|rw, got %q", v.Mode)
+	}
+	return nil
+}
+
+func containsDotDot(p string) bool {
+	// Simple guard; the path is already required to be absolute.
+	for i := 0; i+1 < len(p); i++ {
+		if p[i] == '.' && p[i+1] == '.' {
+			return true
+		}
+	}
+	return false
 }
 
 func lastSegment(path string) string {
