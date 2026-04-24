@@ -16,7 +16,7 @@
 前置：Linux、Go 1.22+、sudo（hived 需要开 namespace）。
 
 ```bash
-git clone git@github.com:xxx1766/Hive-.git
+git clone https://github.com/xxx1766/Hive-.git
 cd Hive-
 sudo ./scripts/install.sh          # 或 PREFIX=$HOME/.local 装到用户目录
 ```
