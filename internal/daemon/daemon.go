@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,11 +16,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anne-x/hive/internal/agent"
+	"github.com/anne-x/hive/internal/eventbus"
 	"github.com/anne-x/hive/internal/image"
 	"github.com/anne-x/hive/internal/ipc"
 	"github.com/anne-x/hive/internal/ns"
 	"github.com/anne-x/hive/internal/protocol"
 	"github.com/anne-x/hive/internal/proxy/aitoolproxy"
+	"github.com/anne-x/hive/internal/proxy/eventproxy"
 	"github.com/anne-x/hive/internal/proxy/fsproxy"
 	"github.com/anne-x/hive/internal/proxy/llmproxy"
 	"github.com/anne-x/hive/internal/proxy/memproxy"
@@ -28,6 +32,7 @@ import (
 	"github.com/anne-x/hive/internal/rank"
 	"github.com/anne-x/hive/internal/remote"
 	"github.com/anne-x/hive/internal/room"
+	"github.com/anne-x/hive/internal/roomstate"
 	"github.com/anne-x/hive/internal/rpc"
 	"github.com/anne-x/hive/internal/store"
 	"github.com/anne-x/hive/internal/volume"
@@ -40,6 +45,7 @@ type Daemon struct {
 	quota          *quota.Actor
 	puller         *remote.Puller
 	volumes        *volume.Manager
+	events         *eventbus.Manager
 	llmProvider    llmproxy.Provider
 	aiToolProvider aitoolproxy.Provider
 
@@ -52,6 +58,13 @@ type Daemon struct {
 	// Live NotifyFunc for the currently-active room/run call, keyed by RoomID.
 	notifyMu sync.RWMutex
 	notifys  map[string]ipc.NotifyFunc
+
+	// shuttingDown is set at the start of Shutdown so the post-exit
+	// OnAgentExit hooks (fired by the reaper goroutines as Stop kills
+	// each Agent) skip persistence — otherwise they'd race-overwrite
+	// state.json with empty members and defeat recovery on next boot.
+	shuttingDown bool
+	shutMu       sync.RWMutex
 }
 
 // New builds a Daemon with the default on-disk locations.
@@ -90,19 +103,31 @@ func New() (*Daemon, error) {
 		return nil, fmt.Errorf("volumes: %w", err)
 	}
 
-	return &Daemon{
+	// Event bus: daemon-wide. Buses are created lazily on first
+	// Subscribe/Publish; lifetime tied to qCtx so Shutdown takes them down.
+	evtMgr := eventbus.New(qCtx)
+
+	d := &Daemon{
 		store:          st,
 		ranks:          rank.DefaultRegistry(),
 		quota:          q,
 		puller:         remote.NewPuller(st),
 		volumes:        volMgr,
+		events:         evtMgr,
 		llmProvider:    prov,
 		aiToolProvider: aiProv,
 		quotaCtx:       qCtx,
 		quotaCancel:    qCancel,
 		rooms:          make(map[string]*room.Room),
 		notifys:        make(map[string]ipc.NotifyFunc),
-	}, nil
+	}
+	// Recover any Rooms persisted by a previous daemon. Best-effort: per-Room
+	// failures (missing image, broken volume, agent that won't start) are
+	// logged-and-skipped so a single bad Room can't keep the daemon down.
+	// Must run before Register exposes RPC handlers — otherwise an early
+	// agent/hire could race with the recovery writer for the same state.json.
+	d.recoverRooms()
+	return d, nil
 }
 
 // Register installs all IPC handlers on srv.
@@ -123,7 +148,15 @@ func (d *Daemon) Register(srv *ipc.Server) {
 }
 
 // Shutdown stops every Room. Called when hived receives SIGTERM.
+//
+// The shuttingDown flag is set first so OnAgentExit hooks fired by the
+// reaper goroutines as Agents die don't re-persist empty member lists
+// over the snapshots recovery will read on next boot.
 func (d *Daemon) Shutdown() {
+	d.shutMu.Lock()
+	d.shuttingDown = true
+	d.shutMu.Unlock()
+
 	d.mu.Lock()
 	rms := make([]*room.Room, 0, len(d.rooms))
 	for _, r := range d.rooms {
@@ -133,9 +166,21 @@ func (d *Daemon) Shutdown() {
 	for _, r := range rms {
 		_ = r.Stop()
 	}
+	if d.events != nil {
+		d.events.Shutdown()
+	}
 	if d.quotaCancel != nil {
 		d.quotaCancel()
 	}
+}
+
+// isShuttingDown reports whether Shutdown has begun. Callers (notably
+// the OnAgentExit hook) use this to skip recovery-relevant persistence
+// while Agents are dying as part of an orderly daemon stop.
+func (d *Daemon) isShuttingDown() bool {
+	d.shutMu.RLock()
+	defer d.shutMu.RUnlock()
+	return d.shuttingDown
 }
 
 // installAgentProxies registers fs/net/llm Agent→Hive handlers on an Agent's
@@ -194,6 +239,14 @@ func (d *Daemon) installAgentProxies(r *room.Room, m *room.Member) {
 		Volumes:   d.volumes,
 		RoomsDir:  ipc.RoomsDir(),
 	}
+	evt := &eventproxy.Proxy{
+		RoomID:    r.ID,
+		AgentName: m.Image.Name,
+		Rank:      m.Rank,
+		Volumes:   d.volumes,
+		Bus:       d.events,
+		Conn:      m.Conn, // doubles as both delivery target and ownership identity
+	}
 	ait := &aitoolproxy.Proxy{
 		RoomID:    r.ID,
 		AgentName: m.Image.Name,
@@ -230,6 +283,16 @@ func (d *Daemon) installAgentProxies(r *room.Room, m *room.Member) {
 	})
 	m.Conn.Handle(rpc.MethodMemoryDelete, func(ctx context.Context, params json.RawMessage) (any, error) {
 		return mem.Delete(params)
+	})
+
+	m.Conn.Handle(rpc.MethodEventsPublish, func(ctx context.Context, params json.RawMessage) (any, error) {
+		return evt.Publish(ctx, params)
+	})
+	m.Conn.Handle(rpc.MethodEventsSubscribe, func(ctx context.Context, params json.RawMessage) (any, error) {
+		return evt.Subscribe(params)
+	})
+	m.Conn.Handle(rpc.MethodEventsUnsubscribe, func(ctx context.Context, params json.RawMessage) (any, error) {
+		return evt.Unsubscribe(params)
 	})
 
 	m.Conn.Handle(rpc.MethodAIToolInvoke, func(ctx context.Context, params json.RawMessage) (any, error) {
@@ -301,7 +364,21 @@ func (d *Daemon) handleRoomInit(ctx context.Context, params json.RawMessage, _ i
 	}
 
 	roomID := fmt.Sprintf("%s-%d", p.Name, time.Now().Unix())
+	r, err := d.createRoom(roomID, p.Name)
+	if err != nil {
+		return nil, err
+	}
+	// Persist immediately (members empty) so a daemon crash *before* the
+	// first hire still leaves a recoverable Room rather than an orphan
+	// rootfs/logs/workspace dir on disk.
+	d.persistRoom(r)
+	return ipc.RoomInitResult{RoomID: roomID, Rootfs: r.Rootfs}, nil
+}
 
+// createRoom is the shared in-memory Room constructor used by both
+// handleRoomInit (fresh user request) and recoverRooms (daemon boot).
+// It installs the per-Room Hooks and registers the Room in d.rooms.
+func (d *Daemon) createRoom(roomID, name string) (*room.Room, error) {
 	hooks := room.Hooks{
 		OnLog: func(imageName string, lp rpc.LogParams) {
 			d.streamLog(roomID, imageName, lp)
@@ -315,18 +392,42 @@ func (d *Daemon) handleRoomInit(ctx context.Context, params json.RawMessage, _ i
 			return nil
 		},
 		RegisterAgentHandlers: d.installAgentProxies,
+		OnAgentExit: func(_ string, conn *agent.Conn) {
+			// Drop every events/* subscription tied to this Conn so they
+			// don't leak past the Agent's lifetime. Volume buses survive
+			// (other Rooms may still hold subscriptions); only this
+			// Conn's entries are removed.
+			if d.events != nil {
+				d.events.UnsubscribeNotifier(conn)
+			}
+			// Skip persistence while the daemon is shutting down — the
+			// reapers fire as we kill Agents, but the existing on-disk
+			// snapshot is exactly what we want recovery to read next
+			// boot. Persisting now would erase the member list.
+			if d.isShuttingDown() {
+				return
+			}
+			// Live exit (Agent crashed or quit voluntarily): re-snapshot
+			// so a future daemon restart won't try to re-hire an Agent
+			// that's already gone. Member is already removed from
+			// r.Members() by the reaper before this hook fires.
+			d.mu.RLock()
+			r := d.rooms[roomID]
+			d.mu.RUnlock()
+			if r != nil {
+				d.persistRoom(r)
+			}
+		},
 	}
 
-	r, err := room.New(roomID, p.Name, hooks)
+	r, err := room.New(roomID, name, hooks)
 	if err != nil {
 		return nil, err
 	}
-
 	d.mu.Lock()
 	d.rooms[roomID] = r
 	d.mu.Unlock()
-
-	return ipc.RoomInitResult{RoomID: roomID, Rootfs: r.Rootfs}, nil
+	return r, nil
 }
 
 func (d *Daemon) handleRoomList(ctx context.Context, _ json.RawMessage, _ ipc.NotifyFunc) (any, error) {
@@ -355,6 +456,17 @@ func (d *Daemon) handleRoomStop(ctx context.Context, params json.RawMessage, _ i
 	}
 	if err := r.Stop(); err != nil {
 		return nil, err
+	}
+	// Reap the same-Room broadcast bus too (Agents have already exited
+	// via OnAgentExit, but the empty bus would otherwise linger).
+	if d.events != nil {
+		d.events.RemoveScope(eventbus.RoomKey(p.RoomID))
+	}
+	// Explicit user stop ⇒ drop persisted state so a future daemon
+	// restart doesn't resurrect the Room. (Daemon Shutdown, by contrast,
+	// keeps state.json — that's exactly what recovery is for.)
+	if err := roomstate.Delete(ipc.RoomsDir(), p.RoomID); err != nil {
+		log.Printf("hived: delete state for room %s: %v", p.RoomID, err)
 	}
 	return struct{}{}, nil
 }
@@ -416,6 +528,12 @@ func (d *Daemon) handleVolumeRemove(ctx context.Context, params json.RawMessage,
 	}
 	if err := d.volumes.Remove(p.Name); err != nil {
 		return nil, protocol.NewError(protocol.ErrCodeInvalidParams, err.Error())
+	}
+	// Tear down the matching event-bus scope so any in-flight publishes
+	// fail fast and stale subscribers can re-subscribe cleanly if the
+	// Volume is later recreated. Idempotent if no bus existed.
+	if d.events != nil {
+		d.events.RemoveScope(eventbus.VolumeKey(p.Name))
 	}
 	return struct{}{}, nil
 }
@@ -511,11 +629,45 @@ func (d *Daemon) handleAgentHire(ctx context.Context, params json.RawMessage, _ 
 	if !ok {
 		return nil, protocol.NewError(protocol.ErrCodeRoomNotFound, "room not found: "+p.RoomID)
 	}
-	img, err := d.store.Get(image.Ref{Name: p.Image.Name, Version: p.Image.Version})
+	m, err := d.hireFromConfig(r, hireConfig{
+		Image:     p.Image,
+		RankName:  p.RankName,
+		QuotaOver: p.QuotaOverr,
+		Volumes:   p.Volumes,
+	})
+	if err != nil {
+		return nil, err
+	}
+	d.persistRoom(r)
+	return ipc.AgentHireResult{
+		Member: ipc.TeamMember{
+			ImageName: m.Image.Name,
+			Rank:      m.Rank.Name,
+			State:     "running",
+		},
+	}, nil
+}
+
+// hireConfig is the wire-form input shared by handleAgentHire and the
+// daemon-restart recovery path. Same shape as ipc.AgentHireParams minus
+// RoomID — the caller already resolved the Room.
+type hireConfig struct {
+	Image     ipc.ImageRef
+	RankName  string
+	QuotaOver json.RawMessage
+	Volumes   []ipc.VolumeMountRef
+}
+
+// hireFromConfig is the single entry point that turns a hireConfig into
+// a running Member. Both the agent/hire RPC and recoverOne(boot) use it
+// — that's the whole point of the extraction: recovery hires Agents via
+// exactly the same code path the user's first hire took.
+func (d *Daemon) hireFromConfig(r *room.Room, cfg hireConfig) (*room.Member, error) {
+	img, err := d.store.Get(image.Ref{Name: cfg.Image.Name, Version: cfg.Image.Version})
 	if err != nil {
 		return nil, protocol.NewError(protocol.ErrCodeImageNotFound, err.Error())
 	}
-	rankName := p.RankName
+	rankName := cfg.RankName
 	if rankName == "" {
 		rankName = img.Manifest.Rank
 	}
@@ -538,7 +690,7 @@ func (d *Daemon) handleAgentHire(ctx context.Context, params json.RawMessage, _ 
 	// long-running Agents don't fill the disk (see logrotate.go). Declared
 	// as the interface type so an open failure leaves logFile as a real
 	// nil (avoiding the typed-nil trap through HireOpts.LogFile).
-	logPath := filepath.Join(ipc.RoomsDir(), p.RoomID, "logs", img.Manifest.Name+".stderr.log")
+	logPath := filepath.Join(ipc.RoomsDir(), r.ID, "logs", img.Manifest.Name+".stderr.log")
 	var logFile io.WriteCloser
 	if f, err := openRotatingLog(logPath, logMaxBytes()); err == nil {
 		logFile = f
@@ -554,9 +706,12 @@ func (d *Daemon) handleAgentHire(ctx context.Context, params json.RawMessage, _ 
 
 	// Parse the Hivefile / CLI quota override, if present.
 	var quotaOverride *rank.Quota
-	if len(p.QuotaOverr) > 0 && string(p.QuotaOverr) != "null" {
+	if len(cfg.QuotaOver) > 0 && string(cfg.QuotaOver) != "null" {
 		var ov ipc.QuotaOverride
-		if err := json.Unmarshal(p.QuotaOverr, &ov); err != nil {
+		if err := json.Unmarshal(cfg.QuotaOver, &ov); err != nil {
+			if logFile != nil {
+				_ = logFile.Close()
+			}
 			return nil, protocol.NewError(protocol.ErrCodeInvalidParams,
 				fmt.Sprintf("parse quota override: %v", err))
 		}
@@ -577,9 +732,12 @@ func (d *Daemon) handleAgentHire(ctx context.Context, params json.RawMessage, _ 
 
 	// Resolve requested volumes. Fail fast with a clear error if a name
 	// doesn't exist — better than letting the Agent crash at fs_read time.
-	for _, v := range p.Volumes {
+	for _, v := range cfg.Volumes {
 		vol, err := d.volumes.Get(v.Name)
 		if err != nil {
+			if logFile != nil {
+				_ = logFile.Close()
+			}
 			return nil, protocol.NewError(protocol.ErrCodeInvalidParams,
 				fmt.Sprintf("volume %q: %v — create with `hive volume create %s`", v.Name, err, v.Name))
 		}
@@ -598,6 +756,7 @@ func (d *Daemon) handleAgentHire(ctx context.Context, params json.RawMessage, _ 
 		Rank:          rk,
 		QuotaOverride: quotaOverride,
 		Mounts:        mounts,
+		Volumes:       cfg.Volumes,
 		LogFile:       logFile,
 		ExtraEnv:      extraEnv,
 	})
@@ -607,13 +766,7 @@ func (d *Daemon) handleAgentHire(ctx context.Context, params json.RawMessage, _ 
 		}
 		return nil, err
 	}
-	return ipc.AgentHireResult{
-		Member: ipc.TeamMember{
-			ImageName: m.Image.Name,
-			Rank:      m.Rank.Name,
-			State:     "running",
-		},
-	}, nil
+	return m, nil
 }
 
 // ── room/run (streams) ───────────────────────────────────────────────────
@@ -687,4 +840,98 @@ func (d *Daemon) streamStatus(roomID, event, imageName string, info map[string]a
 		Info:   info,
 		Time:   time.Now().UTC().Format(time.RFC3339Nano),
 	})
+}
+
+// ── persistence + recovery ───────────────────────────────────────────────
+
+// persistRoom snapshots the Room's current member list to disk. Called
+// after every state-changing operation (room create, agent hire, agent
+// exit). Persistence failures are logged but never bubble up — recovery
+// is opportunistic and shouldn't break user-visible operations.
+func (d *Daemon) persistRoom(r *room.Room) {
+	snap := snapshotFor(r)
+	if err := roomstate.Save(ipc.RoomsDir(), r.ID, snap); err != nil {
+		log.Printf("hived: persist room %s: %v", r.ID, err)
+	}
+}
+
+// snapshotFor builds a Snapshot from the Room's live state. Members are
+// reduced to the wire-form bits hireFromConfig consumes — image ref,
+// rank name, quota override (re-marshalled), volume mounts. Anything
+// process-bound (Conn, router, sub_ids, quota counters) is discarded.
+func snapshotFor(r *room.Room) *roomstate.Snapshot {
+	members := r.Members()
+	out := make([]roomstate.MemberSnap, 0, len(members))
+	for _, m := range members {
+		ms := roomstate.MemberSnap{
+			Image:    ipc.ImageRef{Name: m.Image.Name, Version: m.Image.Version},
+			RankName: m.Rank.Name,
+			Volumes:  m.Volumes,
+			HiredAt:  m.HiredAt,
+		}
+		if m.QuotaOverride != nil {
+			// Re-encode through the wire shape so on-disk state stays
+			// stable across rank.Quota refactors.
+			raw, err := json.Marshal(ipc.QuotaOverride{
+				Tokens:   m.QuotaOverride.Tokens,
+				APICalls: m.QuotaOverride.APICalls,
+			})
+			if err == nil {
+				ms.QuotaOver = raw
+			}
+		}
+		out = append(out, ms)
+	}
+	// Stable order makes diffs and tests deterministic.
+	sort.Slice(out, func(i, j int) bool { return out[i].Image.Name < out[j].Image.Name })
+	return &roomstate.Snapshot{
+		Version: roomstate.CurrentVersion,
+		Name:    r.Name,
+		Members: out,
+	}
+}
+
+// recoverRooms walks state.json files left by a prior daemon and re-runs
+// hire for each persisted member. Best-effort: a Room or member that
+// can't be recovered (missing image, broken volume, agent fails to
+// start) is logged and skipped — never fatal. State files are NOT
+// rewritten here, so the next normal mutation reflects reality and
+// failures can be inspected on disk.
+func (d *Daemon) recoverRooms() {
+	loaded, err := roomstate.LoadAll(ipc.RoomsDir())
+	if err != nil {
+		log.Printf("hived: roomstate.LoadAll: %v", err)
+		return
+	}
+	// Stable order makes startup logs and tests deterministic.
+	sort.Slice(loaded, func(i, j int) bool { return loaded[i].RoomID < loaded[j].RoomID })
+	for _, snap := range loaded {
+		if err := d.recoverOne(snap); err != nil {
+			log.Printf("hived: recover room %s: %v", snap.RoomID, err)
+		}
+	}
+}
+
+// recoverOne resurrects a single Room from its persisted snapshot.
+// Missing/broken members are skipped with a warning so the rest of the
+// Room still comes back; an error here is reserved for "couldn't even
+// build the Room object" (mkdir failed, etc).
+func (d *Daemon) recoverOne(snap roomstate.Loaded) error {
+	r, err := d.createRoom(snap.RoomID, snap.Name)
+	if err != nil {
+		return fmt.Errorf("createRoom: %w", err)
+	}
+	for _, ms := range snap.Members {
+		_, err := d.hireFromConfig(r, hireConfig{
+			Image:     ms.Image,
+			RankName:  ms.RankName,
+			QuotaOver: ms.QuotaOver,
+			Volumes:   ms.Volumes,
+		})
+		if err != nil {
+			log.Printf("hived: recover %s/%s: %v", snap.RoomID, ms.Image.Name, err)
+			continue
+		}
+	}
+	return nil
 }

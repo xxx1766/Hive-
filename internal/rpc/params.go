@@ -18,6 +18,19 @@ type PeerRecvParams struct {
 	Payload json.RawMessage `json:"payload"` // opaque to Hive
 }
 
+// EventsRecvParams is delivered to a subscribed Agent when another Agent
+// publishes an event on the same scope. Mirrors PeerRecvParams shape but
+// carries publisher Room ID too — Volumes cross Room boundaries, so
+// "from" alone is ambiguous when scope != "".
+type EventsRecvParams struct {
+	Scope     string          `json:"scope"`             // "" same-Room broadcast; "<volume>" cross-Room
+	SubID     string          `json:"sub_id"`            // matches the subscribe response
+	FromRoom  string          `json:"from_room"`         // publisher's RoomID
+	FromAgent string          `json:"from_agent"`        // publisher's image name
+	Seq       uint64          `json:"seq"`               // monotonically increasing per scope; for ordering / debug
+	Payload   json.RawMessage `json:"payload"`           // opaque to Hive
+}
+
 // ShutdownParams is empty — presence of the method is the signal.
 type ShutdownParams struct {
 	Reason string `json:"reason,omitempty"`
@@ -152,6 +165,36 @@ type AIToolInvokeResult struct {
 type PeerSendParams struct {
 	To      string          `json:"to"` // target Agent's image name (unique within Room)
 	Payload json.RawMessage `json:"payload"`
+}
+
+// ── Agent → Hive: events (real-time pub/sub, Room-private or Volume-shared)
+//
+// Scope rules mirror memory/* exactly:
+//
+//	""           → same-Room broadcast (delivered to subscribers in the
+//	               caller's Room only — preserves Room isolation)
+//	"<volname>"  → cross-Room broadcast (delivered to subscribers of this
+//	               named Volume in any Room; Volume must already exist)
+//
+// Publishers do NOT receive their own events (no self-loop). Delivery is
+// ephemeral — there's no replay or persistence. Subscriptions auto-cancel
+// when the Agent's Conn closes.
+
+type EventsPublishParams struct {
+	Scope   string          `json:"scope,omitempty"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+type EventsSubscribeParams struct {
+	Scope string `json:"scope,omitempty"`
+}
+
+type EventsSubscribeResult struct {
+	SubID string `json:"sub_id"` // opaque token; pass to unsubscribe
+}
+
+type EventsUnsubscribeParams struct {
+	SubID string `json:"sub_id"`
 }
 
 // ── Agent → Hive: task termination ────────────────────────────────────────

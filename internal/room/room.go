@@ -43,7 +43,13 @@ type Member struct {
 	QuotaOverride *rank.Quota
 	// Mounts records the volumes bind-mounted into this Agent's sandbox.
 	// The daemon uses it to construct the Agent's effective FS allow-list.
-	Mounts  []ns.Mount
+	Mounts []ns.Mount
+	// Volumes preserves the original user-declared mount requests
+	// (volume name + mountpoint + mode). The room itself only needs the
+	// resolved Mounts; this field exists so the daemon can serialise the
+	// hire intent for restart recovery without reverse-deriving names
+	// from on-disk paths.
+	Volumes []ipc.VolumeMountRef
 	Conn    *agent.Conn
 	HiredAt time.Time
 }
@@ -111,6 +117,13 @@ type Hooks struct {
 	// AuthPeerSend is installed on the Router; returns non-nil *protocol.Error
 	// to reject a peer/send.
 	AuthPeerSend func(r *Room, from, to string) error
+	// OnAgentExit fires after an Agent's process has been reaped and the
+	// router has unregistered it. The daemon uses this to drop any
+	// long-lived state keyed off the Conn — most notably event-bus
+	// subscriptions, which would otherwise leak across the Agent's
+	// lifetime. Conn is the same pointer the daemon held during hire,
+	// so it's safe to use as an identity key. Called at most once per Conn.
+	OnAgentExit func(imageName string, conn *agent.Conn)
 }
 
 // New creates an idle Room with its rootfs directory.
@@ -183,6 +196,11 @@ type HireOpts struct {
 	Rank          *rank.Rank
 	QuotaOverride *rank.Quota // nil means "use Rank.Quota defaults"
 	Mounts        []ns.Mount  // extra bind mounts inside the sandbox (volumes)
+	// Volumes is the original wire-form list (name+mountpoint+mode) the
+	// caller resolved into Mounts. Stored on Member purely so the daemon
+	// can serialise it for restart recovery; the room itself doesn't act
+	// on it.
+	Volumes []ipc.VolumeMountRef
 	// LogFile receives the Agent's stderr. Use a concrete *os.File if you
 	// want the kernel to splice stderr directly (fastest path); use any
 	// other io.WriteCloser (e.g. the daemon's rotating log) and os/exec
@@ -231,6 +249,7 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 		Rank:          rk,
 		QuotaOverride: opts.QuotaOverride,
 		Mounts:        opts.Mounts,
+		Volumes:       opts.Volumes,
 		Conn:          conn,
 		HiredAt:       time.Now(),
 	}
@@ -278,6 +297,13 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 		r.mu.Unlock()
 		if logFile != nil {
 			_ = logFile.Close()
+		}
+		// Fire OnAgentExit *before* OnStatus so daemon-side cleanup
+		// (event subscriptions etc.) happens while the Conn is still
+		// the canonical identity for this Agent. OnStatus may surface
+		// the exit to a CLI tail and we want bookkeeping done by then.
+		if r.Hooks.OnAgentExit != nil {
+			r.Hooks.OnAgentExit(img.Manifest.Name, conn)
 		}
 		if r.Hooks.OnStatus != nil {
 			info := map[string]any{}

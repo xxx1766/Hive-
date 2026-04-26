@@ -64,6 +64,54 @@ type PeerMessage struct {
 	Payload json.RawMessage
 }
 
+// Event is an inbound pub/sub event delivered via events/recv. FromRoom
+// is non-empty for cross-Room events (Volume scope) — it's redundant for
+// scope="" since FromRoom always equals this Agent's own RoomID there.
+type Event struct {
+	Scope     string
+	FromRoom  string
+	FromAgent string
+	Seq       uint64
+	Payload   json.RawMessage
+}
+
+// Subscription is the handle returned by Agent.EventsSubscribe. Range
+// over Events() until the channel is closed (Close, or Agent shutdown).
+type Subscription struct {
+	subID  string
+	scope  string
+	ch     chan *Event
+	agent  *Agent
+	closed chan struct{}
+	once   sync.Once
+}
+
+// Events yields incoming events. Closed when the subscription is cancelled.
+func (s *Subscription) Events() <-chan *Event { return s.ch }
+
+// SubID is the daemon-issued opaque token. Mainly useful for logging.
+func (s *Subscription) SubID() string { return s.subID }
+
+// Scope returns the wire scope this subscription was opened on.
+func (s *Subscription) Scope() string { return s.scope }
+
+// Close cancels the subscription daemon-side and closes the Events channel.
+// Idempotent. Safe to call after the Agent has been closed (best-effort
+// unsubscribe; the daemon already cleaned up via OnAgentExit).
+func (s *Subscription) Close() error {
+	var sendErr error
+	s.once.Do(func() {
+		s.agent.subsMu.Lock()
+		delete(s.agent.subs, s.subID)
+		s.agent.subsMu.Unlock()
+		close(s.closed)
+		close(s.ch)
+		// Best-effort RPC; if the agent is already closed we swallow.
+		sendErr = s.agent.notify("events/unsubscribe", map[string]any{"sub_id": s.subID})
+	})
+	return sendErr
+}
+
 // Agent is the Hive-side handle. Construct via Connect / MustConnect.
 type Agent struct {
 	rd   *bufio.Reader
@@ -77,6 +125,9 @@ type Agent struct {
 
 	tasks chan *Task
 	peers chan *PeerMessage
+
+	subsMu sync.Mutex
+	subs   map[string]*Subscription // sub_id → subscription
 
 	closed    chan struct{}
 	closeOnce sync.Once
@@ -107,6 +158,7 @@ func Connect() (*Agent, error) {
 		pend:   make(map[int64]chan *wireMessage),
 		tasks:  make(chan *Task, 16),
 		peers:  make(chan *PeerMessage, 16),
+		subs:   make(map[string]*Subscription),
 		closed: make(chan struct{}),
 	}
 	go a.readLoop()
@@ -283,6 +335,51 @@ func (a *Agent) MemoryDelete(ctx context.Context, scope, key string) error {
 	}, nil)
 }
 
+// ── Events API (real-time pub/sub, Room-private or Volume-shared) ────────
+
+// EventsPublish broadcasts payload to every Agent currently subscribed on
+// the same scope. scope="" reaches subscribers in this Agent's Room only;
+// scope="<volume>" reaches subscribers in any Room that hold the same
+// Volume name. The publisher itself is excluded — events never echo back.
+func (a *Agent) EventsPublish(ctx context.Context, scope string, payload any) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return a.call(ctx, "events/publish", map[string]any{
+		"scope":   scope,
+		"payload": json.RawMessage(raw),
+	}, nil)
+}
+
+// EventsSubscribe opens a subscription on scope and returns a Subscription
+// whose Events() channel yields each delivered Event. Cancel by calling
+// Close on the returned Subscription, or just drop it and let the Agent
+// shutdown clean up daemon-side via OnAgentExit. The returned channel is
+// buffered (16); slow consumers will block delivery for this Agent.
+func (a *Agent) EventsSubscribe(ctx context.Context, scope string) (*Subscription, error) {
+	var res struct {
+		SubID string `json:"sub_id"`
+	}
+	if err := a.call(ctx, "events/subscribe", map[string]any{"scope": scope}, &res); err != nil {
+		return nil, err
+	}
+	if res.SubID == "" {
+		return nil, errors.New("hive: empty sub_id from daemon")
+	}
+	sub := &Subscription{
+		subID:  res.SubID,
+		scope:  scope,
+		ch:     make(chan *Event, 16),
+		agent:  a,
+		closed: make(chan struct{}),
+	}
+	a.subsMu.Lock()
+	a.subs[res.SubID] = sub
+	a.subsMu.Unlock()
+	return sub, nil
+}
+
 // ── AI tool invocation (Claude Code CLI et al.) ──────────────────────────
 
 // AIToolInvoke runs a CLI-shaped AI tool (MVP: "claude-code") with the
@@ -306,7 +403,21 @@ func (a *Agent) AIToolInvoke(ctx context.Context, tool, prompt string) (string, 
 // ── internals ─────────────────────────────────────────────────────────────
 
 func (a *Agent) readLoop() {
-	defer func() { _ = a.Close(); close(a.tasks); close(a.peers) }()
+	defer func() {
+		_ = a.Close()
+		close(a.tasks)
+		close(a.peers)
+		// Close every live subscription so range-over-Events() exits.
+		a.subsMu.Lock()
+		for id, s := range a.subs {
+			s.once.Do(func() {
+				close(s.closed)
+				close(s.ch)
+			})
+			delete(a.subs, id)
+		}
+		a.subsMu.Unlock()
+	}()
 	for {
 		line, err := a.rd.ReadBytes('\n')
 		if len(line) == 0 && err != nil {
@@ -352,6 +463,35 @@ func (a *Agent) readLoop() {
 			_ = json.Unmarshal(m.Params, &p)
 			select {
 			case a.peers <- &PeerMessage{From: p.From, Payload: p.Payload}:
+			case <-a.closed:
+				return
+			}
+
+		case m.Method == "events/recv":
+			var p struct {
+				Scope     string          `json:"scope"`
+				SubID     string          `json:"sub_id"`
+				FromRoom  string          `json:"from_room"`
+				FromAgent string          `json:"from_agent"`
+				Seq       uint64          `json:"seq"`
+				Payload   json.RawMessage `json:"payload"`
+			}
+			_ = json.Unmarshal(m.Params, &p)
+			a.subsMu.Lock()
+			sub, ok := a.subs[p.SubID]
+			a.subsMu.Unlock()
+			if !ok {
+				// Late delivery for a sub we already cancelled — drop.
+				continue
+			}
+			ev := &Event{
+				Scope: p.Scope, FromRoom: p.FromRoom, FromAgent: p.FromAgent,
+				Seq: p.Seq, Payload: p.Payload,
+			}
+			select {
+			case sub.ch <- ev:
+			case <-sub.closed:
+				// Subscription cancelled mid-delivery; drop.
 			case <-a.closed:
 				return
 			}

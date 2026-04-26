@@ -4,9 +4,10 @@ package rpc
 
 // Hive → Agent methods.
 const (
-	MethodTaskRun  = "task/run"  // dispatch a task to the Agent
-	MethodPeerRecv = "peer/recv" // inbound message from another Agent in the Room
-	MethodShutdown = "shutdown"  // graceful termination signal
+	MethodTaskRun    = "task/run"    // dispatch a task to the Agent
+	MethodPeerRecv   = "peer/recv"   // inbound message from another Agent in the Room
+	MethodEventsRecv = "events/recv" // inbound event from a publisher (same Room or cross-Room via Volume)
+	MethodShutdown   = "shutdown"    // graceful termination signal
 )
 
 // Agent → Hive methods.
@@ -21,6 +22,9 @@ const (
 	MethodMemoryGet    = "memory/get"
 	MethodMemoryList   = "memory/list"
 	MethodMemoryDelete = "memory/delete"
+	MethodEventsPublish     = "events/publish"
+	MethodEventsSubscribe   = "events/subscribe"
+	MethodEventsUnsubscribe = "events/unsubscribe"
 	MethodAIToolInvoke = "ai_tool/invoke"
 	MethodTaskDone    = "task/done"
 	MethodTaskError   = "task/error"
