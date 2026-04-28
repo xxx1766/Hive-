@@ -133,6 +133,19 @@ func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, mode *runMode, 
 		if resolvedArgs == nil {
 			resolvedArgs = map[string]any{}
 		}
+		// LLM model fallback: when an llm_complete step doesn't pin a
+		// model in flow.json, use HIVE_MODEL (set by the daemon from the
+		// manifest's `model:` field, possibly overridden by `hive hire
+		// --model X`). Skill-runner already does this at line 58-61;
+		// mirroring it here lets workflow agents pick up `--model` too,
+		// without having to edit every flow.json.
+		if step.Tool == "llm_complete" {
+			if m, ok := resolvedArgs["model"]; !ok || m == nil || m == "" {
+				if envModel := os.Getenv("HIVE_MODEL"); envModel != "" {
+					resolvedArgs["model"] = envModel
+				}
+			}
+		}
 		a.Log("info", "step start", map[string]any{"i": i, "id": step.ID, "tool": step.Tool})
 		result, err := runners.DispatchTool(ctx, a, step.Tool, resolvedArgs)
 		if err != nil {

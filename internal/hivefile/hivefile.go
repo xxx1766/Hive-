@@ -25,6 +25,7 @@ type File struct {
 type AgentEntry struct {
 	Image   string         `yaml:"image"`          // name:version
 	Rank    string         `yaml:"rank,omitempty"` // overrides manifest default
+	Model   string         `yaml:"model,omitempty"` // overrides manifest.Model (HIVE_MODEL)
 	Quota   map[string]any `yaml:"quota,omitempty"`
 	Volumes []VolumeMount  `yaml:"volumes,omitempty"`
 }

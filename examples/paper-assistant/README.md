@@ -110,39 +110,34 @@ export OPENAI_BASE_URL="https://api.gmi-serving.com/v1"
 ```
 但要留意：你的 gateway 支持的 model 名字可能不是 `gpt-4o-mini`（比如 GMI 用 `openai/gpt-5.4-mini`、`deepseek-ai/DeepSeek-V4-Pro` 这种 `vendor/id` 格式）。Demo 默认 `gpt-4o-mini` 在这种 gateway 上**直接 404**。要换 model 见下一节。
 
-### 换默认 model（4 处一起改）
+### 换默认 model（不再要 sed）
 
-模型字符串在四个地方都写死了 `"gpt-4o-mini"`，必须一起改 + 重 build：
+现在 `hive hire` 直接接受 `--model`，或 Hivefile `model:` 字段，运行时切：
 
 ```bash
-NEW_MODEL="openai/gpt-5.4-mini"   # 或别的，按你 gateway 给的列表
-
-# 1. 三个 skill agent 的 manifest（HIVE_MODEL 来源）
-sed -i "s|model: gpt-4o-mini|model: $NEW_MODEL|" \
-    examples/paper-assistant/outline/agent.yaml \
-    examples/paper-assistant/writer/agent.yaml \
-    examples/paper-assistant/reviewer/agent.yaml
-
-# 2. scout 的 flow.json（workflow runner 不读 HIVE_MODEL，要直接改 args）
-sed -i "s|\"model\": \"gpt-4o-mini\"|\"model\": \"$NEW_MODEL\"|" \
-    examples/paper-assistant/scout/flow.json
-
-# 3. quota override 的 model key（在 agent.yaml 和 hivefile 里）—— 不改的话 quota 不会扣到新 model 上
-sed -i "s|\"gpt-4o-mini\"|\"$NEW_MODEL\"|g" \
-    examples/paper-assistant/*/agent.yaml \
-    hivefiles/paper-assistant/*.yaml
-
-# 4. 重 build agents（Hivefile 不用 build）
-for a in scout outline writer reviewer; do
-    ./bin/hive build "./examples/paper-assistant/$a"
-done
-
-# 5. 杀掉之前 hire 的 Room（用旧 image 起的），再重新 hire
-./bin/hive stop "$ROOM" 2>/dev/null
-ROOM=$(./bin/hive hire -f hivefiles/paper-assistant/icml-paper.yaml)
+# 单招路径（最常用）：
+ROOM=$(./bin/hive init smoke)
+./bin/hive hire "$ROOM" paper-writer:0.1.0 \
+    --model openai/gpt-5.4-mini \
+    --quota '{"tokens":{"openai/gpt-5.4-mini":80000}}' \
+    --no-prompt
+# 或省略 --no-prompt，prompt 会问 model? 之后 tokens? 自动问 "for openai/gpt-5.4-mini" 的预算
 ```
 
-> 长远应该加一个 `HIVE_DEFAULT_MODEL` env，让 daemon 在 manifest.Model 为空时取这个 —— 现在没做（v2 papercut）。
+```yaml
+# Hivefile 路径：在 agents[i] 下加一行
+agents:
+  - image: paper-writer:0.1.0
+    rank: manager
+    model: openai/gpt-5.4-mini      # NEW
+    quota:
+      tokens:
+        "openai/gpt-5.4-mini": 80000
+```
+
+**关键**：`--model` 或 Hivefile `model:` 同时设了 `--quota` / `quota:` 时，**记得 quota 的 token key 要跟 model 名字一致** —— 不然 LLM 调用走得通但 quota 不会被记到那个 key 上（在 `hive team` 里也看不见）。Prompt 模式自动帮你对齐；手写 yaml / flag 时要自己注意。
+
+> Workflow agent（如 scout）的 flow.json 如果 hardcode 了 `"model": "..."`，会盖过 `--model` —— 留空 model 字段（runner 会从 HIVE_MODEL fallback）才能让 override 生效。本仓库的 `scout/flow.json` 已删掉 hardcode。
 
 ## 每篇 paper 的 session
 

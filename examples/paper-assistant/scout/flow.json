@@ -10,7 +10,6 @@
       "id": "summarise",
       "tool": "llm_complete",
       "args": {
-        "model": "gpt-4o-mini",
         "max_tokens": 800,
         "messages": [
           {"role": "system", "content": "You are a literature scout for an academic paper. You will receive (a) the user's research topic, then (b) a JSON array of arxiv paper records (id/title/abstract). Output Markdown ONLY: a 2-sentence overview paragraph; then one bullet per paper (≤2 sentences: mechanism + the gap it leaves vs the topic); then a 3-column table | Paper | Mechanism | Gap |. Stay concrete — name the gap each paper leaves."},

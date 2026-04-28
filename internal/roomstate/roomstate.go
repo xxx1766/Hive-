@@ -48,6 +48,7 @@ type Snapshot struct {
 type MemberSnap struct {
 	Image     ipc.ImageRef         `json:"image"`
 	RankName  string               `json:"rank,omitempty"`
+	Model     string               `json:"model,omitempty"`
 	QuotaOver json.RawMessage      `json:"quota,omitempty"`
 	Volumes   []ipc.VolumeMountRef `json:"volumes,omitempty"`
 	HiredAt   time.Time            `json:"hired_at"`

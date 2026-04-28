@@ -71,7 +71,19 @@ Drafts land at `$HIVE_STATE/volumes/paper-osdi-draft/<section>.md`. Open them in
 
 ## Tips
 
-- **Set `OPENAI_API_KEY`** — without it, llmproxy returns mock text and skill agents won't ReAct through tools.
+- **Set `OPENAI_API_KEY` + `OPENAI_BASE_URL`** — without these, llmproxy returns mock text and skill agents won't ReAct through tools. For non-OpenAI gateways (e.g. GMI):
+  ```bash
+  export OPENAI_API_KEY="$GMI_API_KEY"
+  export OPENAI_BASE_URL="https://api.gmi-serving.com/v1"
+  ```
+- **Pick a non-default model at hire time** without editing yaml:
+  ```bash
+  ./bin/hive hire "$ROOM" paper-writer:0.1.0 \
+      --model openai/gpt-5.4-mini \
+      --quota '{"tokens":{"openai/gpt-5.4-mini":80000}}' \
+      --no-prompt
+  ```
+  Or the interactive prompt asks for model + tokens together (model auto-fills the quota key).
 - **Replace `sample-arxiv/papers.json`** with real arxiv exports (or wire scout to a live arxiv client) before running for real.
 - **Add your past papers** to `paper-osdi-corpus/` as you accumulate — writer's style mimicry improves.
 - **Reviewer is `:ro`** by Rank-as-policy — by design it cannot fix your draft, only annotate. Apply suggestions yourself.
