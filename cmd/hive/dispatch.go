@@ -31,6 +31,8 @@ func dispatchCmd(ctx context.Context, cmd string, args []string) bool {
 		cmdLogs(ctx, args)
 	case "volume":
 		cmdVolume(ctx, args)
+	case "update":
+		cmdUpdate(ctx, args)
 	default:
 		return false
 	}

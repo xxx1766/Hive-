@@ -23,6 +23,10 @@ sudo ./scripts/install.sh          # 或 PREFIX=$HOME/.local 装到用户目录
 
 脚本会检查 Go 版本、`make build`、把 4 个 binary 装进 `/usr/local/bin/`、初始化 `~/.hive/`。
 
+> 后续要升级到最新代码：
+> - 已经装过 `hive` → `sudo hive update`（详见 `hive help update`）
+> - 还没装 / binary 坏了 → `sudo ./scripts/update.sh` 或 `sudo make update`（同等效果，纯 shell，不依赖现有 binary）
+
 起 daemon + 跑第一个 skill Agent（无需 API key）：
 
 ```bash
@@ -82,6 +86,7 @@ ROOM=$(./bin/hive init my-room)
 | `hive volume create/ls/rm` | 管理跨 Room 持久化卷 |
 | `hive run <room> [task]` | 下发任务，实时流式打印 Agent 日志（`--target <image>` 选收件人） |
 | `hive stop <room>` | 停掉 Room |
+| `hive update` | 拉最新 hive 源码、重 build、重装（`--check` 只看不装） |
 
 ---
 

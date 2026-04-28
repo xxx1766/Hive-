@@ -148,6 +148,28 @@ Name rules: [A-Za-z0-9_-]{1,64}. No spaces, slashes, or dots.
 
 See 'docs/TUTORIAL.md' §跨 Room 共享记忆 for the full story.`,
 	},
+	"update": {
+		usage: "hive update [--check] [--force] [--ref <branch|tag|sha>] [--source-dir <path>] [--prefix <path>]",
+		brief: "pull latest hive source, rebuild, and reinstall",
+		long: `Updates the locally-installed hive binaries to the latest source.
+Equivalent to running 'git pull --ff-only && make build && scripts/install.sh
+--skip-build' in the source tree.
+
+Source tree resolution (in order):
+  1. --source-dir <path>
+  2. ~/.hive/install.json (breadcrumb dropped by scripts/install.sh)
+  3. walk up from the running hive binary looking for .git + Makefile
+
+Flags:
+  --check               compare local vs upstream, print result, do nothing
+  --force               rebuild + reinstall even if already at upstream
+  --ref <ref>           git checkout <ref> before pulling (branch/tag/sha)
+  --source-dir <path>   override breadcrumb / fallback resolution
+  --prefix <path>       install PREFIX (default /usr/local; matches install.sh)
+
+After install, hived may still be running the previous binary in memory —
+the command prints a restart hint when it detects a running daemon.`,
+	},
 	"help": {
 		usage: "hive help [<command>]",
 		brief: "show this help or per-command help",
@@ -167,6 +189,7 @@ var cmdOrder = []string{
 	"volume",
 	"init", "rooms", "up",
 	"hire", "team", "run", "stop", "logs",
+	"update",
 	"help",
 }
 

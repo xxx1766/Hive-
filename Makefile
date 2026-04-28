@@ -1,4 +1,4 @@
-.PHONY: build test demo clean install-deps examples install uninstall
+.PHONY: build test demo clean install-deps examples install uninstall update
 
 BIN_DIR := bin
 GO      := go
@@ -53,3 +53,7 @@ install: build
 
 uninstall:
 	PREFIX=$(PREFIX) ./scripts/uninstall.sh
+
+# Pull the latest source, rebuild, and reinstall. Mirrors `hive update`.
+update:
+	PREFIX=$(PREFIX) ./scripts/update.sh
