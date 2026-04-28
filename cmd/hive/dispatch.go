@@ -9,8 +9,8 @@ func dispatchCmd(ctx context.Context, cmd string, args []string) bool {
 	switch cmd {
 	case "build":
 		cmdBuild(ctx, args)
-	case "images":
-		cmdImages(ctx, args)
+	case "agents":
+		cmdAgents(ctx, args)
 	case "init":
 		cmdInit(ctx, args)
 	case "rooms":
@@ -23,8 +23,6 @@ func dispatchCmd(ctx context.Context, cmd string, args []string) bool {
 		cmdHire(ctx, args)
 	case "run":
 		cmdRun(ctx, args)
-	case "up":
-		cmdUp(ctx, args)
 	case "pull":
 		cmdPull(ctx, args)
 	case "logs":

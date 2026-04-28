@@ -38,9 +38,15 @@ For kind=binary Agents, <dir>/<entry> must already be built (typically
 ./bin/<name>). For kind=skill / kind=workflow no compilation is needed —
 the directory just needs the relevant .md / .json files.`,
 	},
-	"images": {
-		usage: "hive images",
-		brief: "list local Hive Images",
+	"agents": {
+		usage: "hive agents",
+		brief: "list locally-installed Agents",
+		long: `Lists every Agent that's been built or pulled into the local store
+(~/.hive/images/<name>/<version>/). Output format is "<name>:<version>",
+one per line.
+
+The on-disk format is still called a "Hive Image" — 'hive agents' is
+the user-facing view of "what can I hire right now?".`,
 	},
 	"pull": {
 		usage: "hive pull <url>",
@@ -66,42 +72,48 @@ hived. Prints the RoomID; capture it for subsequent hire/run/team/stop.`,
 		usage: "hive rooms",
 		brief: "list all Rooms",
 	},
-	"up": {
-		usage: "hive up <hivefile-or-url> [--room <name>]",
-		brief: "init a Room + hire all Agents declared in a Hivefile.yaml",
-		long: `<hivefile-or-url> accepts either a local path to a Hivefile.yaml or any
-of the three remote URL forms accepted by 'hive pull'.
-
-Inside the Hivefile, each agent's 'image:' field may also be a remote
-URL — the daemon pulls each one on the fly.
-
-Quota overrides in the Hivefile ('quota:' under each agent) propagate
-down to the daemon as partial overrides on top of Rank defaults.
-
-Flags:
-  --room <name>  override the Room name declared in the Hivefile.
-                 Useful for running the same Hivefile as multiple
-                 independent Rooms (e.g. parallel demos/experiments).`,
-	},
 	"hire": {
-		usage: "hive hire <room> <ref> [--rank <name>] [--quota <json>] [--volume <name>:<mountpoint>[:<ro|rw>]]...",
-		brief: "hire an Agent into a Room",
-		long: `<ref> may be:
-  name:version                             local Image (from the store)
-  github://owner/repo/path[@ref]           remote, auto-pulls
-  https://github.com/owner/repo/tree/...   browser URL
-  owner/repo#path[@ref]                    short form
+		usage: "hive hire <room> <ref> [flags]   |   hive hire -f <hivefile-or-url> [--room <name>]",
+		brief: "hire one Agent into a Room, or batch-hire from a Hivefile",
+		long: `Two shapes:
 
-Flags:
-  --rank <name>             override the Image's manifest default Rank
-                            (intern / staff / manager / director)
-  --quota <json>            override per-resource quota caps. JSON shape:
-                              {"tokens":{"gpt-4o-mini":500},"api_calls":{"http":5}}
-                            Partial: keys not in the JSON keep the Rank default.
-  --volume <n>:<mp>[:<m>]   bind-mount a named Volume into the Agent's sandbox.
-                            <n>=volume name (create with 'hive volume create')
-                            <mp>=absolute mountpoint (e.g. /shared/kb)
-                            <m>=ro|rw (default ro). Can be repeated.`,
+1. Single hire (Room must already exist):
+     hive hire <room> <ref> [--rank <name>] [--quota <json>] [--volume <n>:<mp>[:<m>]]...
+
+   <ref> may be:
+     name:version                             local Agent (from the store)
+     github://owner/repo/path[@ref]           remote, auto-pulls
+     https://github.com/owner/repo/tree/...   browser URL
+     owner/repo#path[@ref]                    short form
+
+   Flags:
+     --rank <name>             override the Agent's manifest default Rank
+                               (intern / staff / manager / director)
+     --quota <json>            override per-resource quota caps. JSON shape:
+                                 {"tokens":{"gpt-4o-mini":500},"api_calls":{"http":5}}
+                               Partial: keys not in the JSON keep the Rank default.
+     --volume <n>:<mp>[:<m>]   bind-mount a named Volume into the Agent's sandbox.
+                               <n>=volume name (create with 'hive volume create')
+                               <mp>=absolute mountpoint (e.g. /shared/kb)
+                               <m>=ro|rw (default ro). Can be repeated.
+
+2. Batch hire from a Hivefile (auto-creates the Room):
+     hive hire -f <hivefile-or-url> [--room <name>]
+
+   <hivefile-or-url> accepts a local path or any of the three remote URL
+   forms accepted by 'hive pull'. Each agent's 'image:' inside the Hivefile
+   may also be remote.
+
+   Stdout receives only the new RoomID, so 'ROOM=$(hive hire -f file.yaml)'
+   is safe in shell scripts; per-agent progress goes to stderr.
+
+   Flags:
+     --room <name>   override the Room name declared in the Hivefile.
+                     Useful for running the same Hivefile as multiple
+                     independent Rooms (parallel demos/experiments).
+
+   --rank/--quota/--volume are per-agent and live inside the Hivefile;
+   they are rejected on 'hive hire -f'.`,
 	},
 	"team": {
 		usage: "hive team <room>",
@@ -185,9 +197,9 @@ the command prints a restart hint when it detects a running daemon.`,
 // diagnostics / image lifecycle / room lifecycle / task lifecycle / debug.
 var cmdOrder = []string{
 	"version", "ping",
-	"build", "images", "pull",
+	"build", "agents", "pull",
 	"volume",
-	"init", "rooms", "up",
+	"init", "rooms",
 	"hire", "team", "run", "stop", "logs",
 	"update",
 	"help",

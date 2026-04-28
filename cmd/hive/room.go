@@ -8,6 +8,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/anne-x/hive/internal/hivefile"
 	"github.com/anne-x/hive/internal/image"
 	"github.com/anne-x/hive/internal/ipc"
 )
@@ -138,10 +139,62 @@ func formatQuota(q map[string]any) string {
 	return strings.Join(parts, " ")
 }
 
+// hireOneAgent runs the per-Agent pipeline used by both `hive hire` modes:
+// pull-if-remote → ParseRef → daemon AgentHire RPC. Returns the resolved
+// local ref (name:version) so callers can render "remote (= local)" when
+// the input was a URL.
+func hireOneAgent(
+	ctx context.Context,
+	c *ipc.Client,
+	roomID, refInput, rank string,
+	quotaRaw json.RawMessage,
+	volumes []ipc.VolumeMountRef,
+) (ipc.AgentHireResult, string, error) {
+	localRef, err := pullIfRemote(ctx, c, refInput)
+	if err != nil {
+		return ipc.AgentHireResult{}, "", err
+	}
+	ref, err := image.ParseRef(localRef)
+	if err != nil {
+		return ipc.AgentHireResult{}, "", err
+	}
+	raw, err := c.Call(ctx, ipc.MethodAgentHire, ipc.AgentHireParams{
+		RoomID:     roomID,
+		Image:      ipc.ImageRef{Name: ref.Name, Version: ref.Version},
+		RankName:   rank,
+		QuotaOverr: quotaRaw,
+		Volumes:    volumes,
+	})
+	if err != nil {
+		return ipc.AgentHireResult{}, localRef, err
+	}
+	var r ipc.AgentHireResult
+	_ = json.Unmarshal(raw, &r)
+	return r, localRef, nil
+}
+
+// cmdHire dispatches between two CLI shapes:
+//
+//	hive hire <room> <ref> [--rank ...] [--quota ...] [--volume ...]   single-agent
+//	hive hire -f <hivefile-or-url> [--room <name>]                     declarative batch
+//
+// In batch mode, hire creates the Room itself (taking the name from
+// hivefile.room, or --room override), then iterates hf.Agents. Stdout
+// gets the RoomID so shell scripts can capture it; per-Agent progress
+// goes to stderr.
 func cmdHire(ctx context.Context, args []string) {
 	if maybeHandleHelpFlag("hire", args) {
 		return
 	}
+
+	// Detect -f / --file anywhere in args; treats both as the same flag.
+	for _, a := range args {
+		if a == "-f" || a == "--file" {
+			cmdHireFile(ctx, args)
+			return
+		}
+	}
+
 	if len(args) < 2 {
 		printCommandHelp("hire", os.Stderr)
 		os.Exit(2)
@@ -190,31 +243,121 @@ func cmdHire(ctx context.Context, args []string) {
 	c := mustDial(ctx)
 	defer c.Close()
 
-	// If it's a remote ref, pull into local store first and swap to
-	// the resolved name:version.
-	localRef, err := pullIfRemote(ctx, c, refInput)
+	r, _, err := hireOneAgent(ctx, c, roomID, refInput, rank, quotaRaw, volumes)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hire: %v\n", err)
 		os.Exit(1)
 	}
-	ref, err := image.ParseRef(localRef)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "hire: %v\n", err)
+	fmt.Printf("hired %s (rank=%s)\n", r.Member.ImageName, r.Member.Rank)
+}
+
+// cmdHireFile implements `hive hire -f <hivefile-or-url> [--room <name>]`.
+// It auto-creates the Room and hires every Agent declared in the Hivefile.
+// Stdout receives only the RoomID so callers can do ROOM=$(hive hire -f ...).
+func cmdHireFile(ctx context.Context, args []string) {
+	var src, roomOverride string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-f" || a == "--file":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "hire: -f requires a hivefile path or URL")
+				os.Exit(2)
+			}
+			if src != "" {
+				fmt.Fprintln(os.Stderr, "hire: -f given more than once")
+				os.Exit(2)
+			}
+			src = args[i+1]
+			i++
+		case a == "--room":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "hire: --room requires a non-empty name")
+				os.Exit(2)
+			}
+			roomOverride = args[i+1]
+			if roomOverride == "" {
+				fmt.Fprintln(os.Stderr, "hire: --room requires a non-empty name")
+				os.Exit(2)
+			}
+			i++
+		case a == "--rank", a == "--quota", a == "--volume":
+			fmt.Fprintf(os.Stderr, "hire: %s is per-agent and belongs in the Hivefile, not on `hive hire -f`\n", a)
+			os.Exit(2)
+		default:
+			fmt.Fprintf(os.Stderr, "hire: unknown argument %q\n", a)
+			os.Exit(2)
+		}
+	}
+	if src == "" {
+		fmt.Fprintln(os.Stderr, "hire: -f requires a hivefile path or URL")
 		os.Exit(2)
 	}
 
-	raw, err := c.Call(ctx, ipc.MethodAgentHire, ipc.AgentHireParams{
-		RoomID:     roomID,
-		Image:      ipc.ImageRef{Name: ref.Name, Version: ref.Version},
-		RankName:   rank,
-		QuotaOverr: quotaRaw,
-		Volumes:    volumes,
-	})
+	hfPath := src
+	if looksRemoteRef(src) {
+		tmp, err := fetchHivefileToTemp(ctx, src)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hire: fetch hivefile: %v\n", err)
+			os.Exit(1)
+		}
+		defer os.Remove(tmp)
+		hfPath = tmp
+	}
+
+	hf, err := hivefile.Load(hfPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hire: %v\n", err)
 		os.Exit(1)
 	}
-	var r ipc.AgentHireResult
-	_ = json.Unmarshal(raw, &r)
-	fmt.Printf("hired %s (rank=%s)\n", r.Member.ImageName, r.Member.Rank)
+
+	c := mustDial(ctx)
+	defer c.Close()
+
+	// 1. Init Room.
+	roomName := hf.Room
+	if roomOverride != "" {
+		roomName = roomOverride
+	}
+	raw, err := c.Call(ctx, ipc.MethodRoomInit, ipc.RoomInitParams{Name: roomName})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hire/init: %v\n", err)
+		os.Exit(1)
+	}
+	var init ipc.RoomInitResult
+	_ = json.Unmarshal(raw, &init)
+	fmt.Fprintf(os.Stderr, "  room %s created\n", init.RoomID)
+
+	// 2. Hire each declared Agent.
+	for _, a := range hf.Agents {
+		var quotaRaw json.RawMessage
+		if len(a.Quota) > 0 {
+			b, err := json.Marshal(a.Quota)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "hire/quota %s: %v\n", a.Image, err)
+				os.Exit(1)
+			}
+			quotaRaw = b
+		}
+		var vols []ipc.VolumeMountRef
+		for _, v := range a.Volumes {
+			vols = append(vols, ipc.VolumeMountRef{
+				Name: v.Name, Mode: v.Mode, Mountpoint: v.Mountpoint,
+			})
+		}
+
+		_, localRef, err := hireOneAgent(ctx, c, init.RoomID, a.Image, a.Rank, quotaRaw, vols)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hire %s: %v\n", a.Image, err)
+			os.Exit(1)
+		}
+		display := a.Image
+		if display != localRef {
+			display = fmt.Sprintf("%s (= %s)", a.Image, localRef)
+		}
+		fmt.Fprintf(os.Stderr, "  hired %s\n", display)
+	}
+
+	// 3. Print RoomID to stdout so shell scripts can capture it.
+	fmt.Println(init.RoomID)
 }

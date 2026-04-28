@@ -29,21 +29,24 @@ func cmdBuild(ctx context.Context, args []string) {
 	fmt.Printf("built %s at %s\n", r.Image, r.Path)
 }
 
-func cmdImages(ctx context.Context, args []string) {
-	if maybeHandleHelpFlag("images", args) {
+// cmdAgents lists the locally-installed Agents (Hive Images in the store).
+// The CLI surface name is `agents` because that's what the user thinks of
+// — "Hive Image" stays as the internal packaging concept.
+func cmdAgents(ctx context.Context, args []string) {
+	if maybeHandleHelpFlag("agents", args) {
 		return
 	}
 	c := mustDial(ctx)
 	defer c.Close()
 	raw, err := c.Call(ctx, ipc.MethodImageList, nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "images: %v\n", err)
+		fmt.Fprintf(os.Stderr, "agents: %v\n", err)
 		os.Exit(1)
 	}
 	var r ipc.ImageListResult
 	_ = json.Unmarshal(raw, &r)
 	if len(r.Images) == 0 {
-		fmt.Println("(no images)")
+		fmt.Println("(no agents)")
 		return
 	}
 	for _, img := range r.Images {

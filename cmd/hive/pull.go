@@ -34,8 +34,8 @@ func cmdPull(ctx context.Context, args []string) {
 
 // pullIfRemote, when given a remote ref, returns the local name:version
 // string (after daemon-side pull). When given a plain name:version, it
-// returns the input unchanged. Used by `hive hire` and `hive up` so the
-// rest of their code paths only deal with local refs.
+// returns the input unchanged. Used by both shapes of `hive hire`
+// (single and -f) so the rest of their code paths only deal with local refs.
 func pullIfRemote(ctx context.Context, c *ipcClient, refStr string) (string, error) {
 	if !looksRemoteRef(refStr) {
 		return refStr, nil

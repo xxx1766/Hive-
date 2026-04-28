@@ -91,7 +91,7 @@ hive stop  "$ROOM"               # 收工
 
 ## 4. 远端拉取的三种 URL 形式
 
-`hive hire` / `hive up` / `hive pull` 都支持：
+`hive hire`（含 `-f` 形式）和 `hive pull` 都支持：
 
 | 形式 | 样例 |
 |---|---|
@@ -181,7 +181,7 @@ agents:
 ```
 
 ```bash
-ROOM=$(hive up hivefiles/my-team.yaml)
+ROOM=$(hive hire -f hivefiles/my-team.yaml)
 hive team "$ROOM"
 hive run  "$ROOM" '{"text":"..."}'
 ```
@@ -189,14 +189,14 @@ hive run  "$ROOM" '{"text":"..."}'
 想让同一份 Hivefile 起多个独立的 Room（跑并行演示 / 实验），加 `--room <name>` 覆盖即可：
 
 ```bash
-ROOM_A=$(hive up hivefiles/my-team.yaml --room demo-a)
-ROOM_B=$(hive up hivefiles/my-team.yaml --room demo-b)
+ROOM_A=$(hive hire -f hivefiles/my-team.yaml --room demo-a)
+ROOM_B=$(hive hire -f hivefiles/my-team.yaml --room demo-b)
 ```
 
-`hive up` 本身也可以吃一个远端 URL：
+`hive hire -f` 本身也可以吃一个远端 URL：
 
 ```bash
-ROOM=$(hive up github://xxx1766/Hive-/registry/hivefiles/skill-demo)
+ROOM=$(hive hire -f github://xxx1766/Hive-/registry/hivefiles/skill-demo)
 ```
 
 里面 `agents[].image` 是远端时，daemon 逐个 pull 到本地再 hire。
