@@ -114,6 +114,7 @@ type AgentHireParams struct {
 	RoomID     string            `json:"room_id"`
 	Image      ImageRef          `json:"image"`
 	RankName   string            `json:"rank,omitempty"`   // override manifest default
+	Model      string            `json:"model,omitempty"`  // override manifest.Model (HIVE_MODEL); empty ⇒ keep manifest's
 	QuotaOverr json.RawMessage   `json:"quota,omitempty"`  // override manifest quota (partial); shape = QuotaOverride
 	Volumes    []VolumeMountRef  `json:"volumes,omitempty"` // bind-mount named volumes into this Agent's sandbox
 }

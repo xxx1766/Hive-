@@ -145,11 +145,21 @@ func (o *OpenAIProvider) Complete(ctx context.Context, p rpc.LLMCompleteParams) 
 		Role    string `json:"role"`
 		Content string `json:"content"`
 	}
-	reqBody := struct {
-		Model    string  `json:"model"`
-		Messages []oaMsg `json:"messages"`
-		MaxTok   int     `json:"max_tokens,omitempty"`
-	}{Model: p.Model, MaxTok: p.MaxTokens}
+	// OpenAI renamed max_tokens → max_completion_tokens for the o1/o3/gpt-5
+	// model families. Older models (gpt-4o, gpt-4-turbo, gpt-3.5) reject
+	// max_completion_tokens; newer ones reject max_tokens. Pick by model name.
+	type oaReq struct {
+		Model               string  `json:"model"`
+		Messages            []oaMsg `json:"messages"`
+		MaxTokens           int     `json:"max_tokens,omitempty"`
+		MaxCompletionTokens int     `json:"max_completion_tokens,omitempty"`
+	}
+	reqBody := oaReq{Model: p.Model}
+	if usesMaxCompletionTokens(p.Model) {
+		reqBody.MaxCompletionTokens = p.MaxTokens
+	} else {
+		reqBody.MaxTokens = p.MaxTokens
+	}
 	for _, m := range p.Messages {
 		reqBody.Messages = append(reqBody.Messages, oaMsg{Role: m.Role, Content: m.Content})
 	}
@@ -204,6 +214,28 @@ func (o *OpenAIProvider) Complete(ctx context.Context, p rpc.LLMCompleteParams) 
 			TotalTokens:      ck.Usage.TotalTokens,
 		},
 	}, nil
+}
+
+// usesMaxCompletionTokens reports whether `model` is in the family that
+// requires max_completion_tokens instead of max_tokens. Heuristic: name
+// contains "gpt-5", "o1-", "o3-", "o4-", or starts with "openai/gpt-5"/
+// "openai/o1" etc. Conservative — when unsure, returns false (the older,
+// broader-compatibility field).
+func usesMaxCompletionTokens(model string) bool {
+	m := strings.ToLower(model)
+	// Strip vendor prefix common to OpenAI-compatible gateways
+	// (e.g. "openai/gpt-5.4-mini" → "gpt-5.4-mini").
+	if i := strings.Index(m, "/"); i >= 0 {
+		m = m[i+1:]
+	}
+	switch {
+	case strings.HasPrefix(m, "gpt-5"),
+		strings.HasPrefix(m, "o1-"), m == "o1",
+		strings.HasPrefix(m, "o3-"), m == "o3",
+		strings.HasPrefix(m, "o4-"), m == "o4":
+		return true
+	}
+	return false
 }
 
 func truncate(s string, n int) string {

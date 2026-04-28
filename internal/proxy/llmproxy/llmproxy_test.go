@@ -13,6 +13,45 @@ import (
 	"github.com/anne-x/hive/internal/rpc"
 )
 
+// usesMaxCompletionTokens table — the heuristic that picks between OpenAI's
+// legacy max_tokens and the new max_completion_tokens field. False positives
+// here send max_tokens to a model that rejects it (legacy gateway error);
+// false negatives send max_completion_tokens to o1/gpt-5 (gateway error).
+// Both directions matter; the table covers both edges.
+func TestUsesMaxCompletionTokens(t *testing.T) {
+	for _, c := range []struct {
+		model string
+		want  bool
+	}{
+		{"gpt-4o-mini", false},
+		{"gpt-4o", false},
+		{"gpt-4-turbo", false},
+		{"gpt-3.5-turbo", false},
+		{"openai/gpt-4o-mini", false},
+		// The new families:
+		{"gpt-5", true},
+		{"gpt-5.4-mini", true},
+		{"openai/gpt-5", true},
+		{"openai/gpt-5.4-mini", true},
+		{"openai/gpt-5.4-pro", true},
+		{"openai/gpt-5.5", true},
+		{"o1", true},
+		{"o1-mini", true},
+		{"o1-preview", true},
+		{"o3-mini", true},
+		{"openai/o1-mini", true},
+		// Non-OpenAI models on the gateway — keep them on the older field
+		// (deepseek/anthropic/etc. accept max_tokens by convention).
+		{"deepseek-ai/DeepSeek-V4-Pro", false},
+		{"anthropic/claude-sonnet-4.6", false},
+	} {
+		got := usesMaxCompletionTokens(c.model)
+		if got != c.want {
+			t.Errorf("usesMaxCompletionTokens(%q) = %v want %v", c.model, got, c.want)
+		}
+	}
+}
+
 func setup(t *testing.T) (*Proxy, context.CancelFunc) {
 	t.Helper()
 	q := quota.New(0)

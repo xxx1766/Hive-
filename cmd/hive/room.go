@@ -146,7 +146,7 @@ func formatQuota(q map[string]any) string {
 func hireOneAgent(
 	ctx context.Context,
 	c *ipc.Client,
-	roomID, refInput, rank string,
+	roomID, refInput, rank, model string,
 	quotaRaw json.RawMessage,
 	volumes []ipc.VolumeMountRef,
 ) (ipc.AgentHireResult, string, error) {
@@ -162,6 +162,7 @@ func hireOneAgent(
 		RoomID:     roomID,
 		Image:      ipc.ImageRef{Name: ref.Name, Version: ref.Version},
 		RankName:   rank,
+		Model:      model,
 		QuotaOverr: quotaRaw,
 		Volumes:    volumes,
 	})
@@ -203,8 +204,10 @@ func cmdHire(ctx context.Context, args []string) {
 	refInput := args[1]
 
 	rank := ""
+	model := ""
 	var quotaRaw json.RawMessage
 	var volumes []ipc.VolumeMountRef
+	noPrompt := false
 	for i := 2; i < len(args); i++ {
 		switch args[i] {
 		case "--rank":
@@ -213,6 +216,13 @@ func cmdHire(ctx context.Context, args []string) {
 				os.Exit(2)
 			}
 			rank = args[i+1]
+			i++
+		case "--model":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "hire: --model requires a model name")
+				os.Exit(2)
+			}
+			model = args[i+1]
 			i++
 		case "--quota":
 			if i+1 >= len(args) {
@@ -237,13 +247,28 @@ func cmdHire(ctx context.Context, args []string) {
 			}
 			volumes = append(volumes, v)
 			i++
+		case "--no-prompt", "--non-interactive":
+			noPrompt = true
 		}
+	}
+
+	// Auto-prompt when the user is interactive and didn't pre-specify any
+	// override on the command line. Skipped on a pipe (CI, demos) so scripts
+	// don't block on stdin. Explicit --no-prompt opt-out for users who want
+	// "use manifest defaults, no questions" even on a TTY.
+	if !noPrompt && rank == "" && model == "" && len(quotaRaw) == 0 && len(volumes) == 0 && stdinIsTTY() {
+		pRank, pModel, pQuota, pVols, perr := promptHireOverrides(os.Stdin, os.Stderr, refInput)
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "hire: %v\n", perr)
+			os.Exit(2)
+		}
+		rank, model, quotaRaw, volumes = pRank, pModel, pQuota, pVols
 	}
 
 	c := mustDial(ctx)
 	defer c.Close()
 
-	r, _, err := hireOneAgent(ctx, c, roomID, refInput, rank, quotaRaw, volumes)
+	r, _, err := hireOneAgent(ctx, c, roomID, refInput, rank, model, quotaRaw, volumes)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hire: %v\n", err)
 		os.Exit(1)
@@ -281,9 +306,13 @@ func cmdHireFile(ctx context.Context, args []string) {
 				os.Exit(2)
 			}
 			i++
-		case a == "--rank", a == "--quota", a == "--volume":
+		case a == "--rank", a == "--model", a == "--quota", a == "--volume":
 			fmt.Fprintf(os.Stderr, "hire: %s is per-agent and belongs in the Hivefile, not on `hive hire -f`\n", a)
 			os.Exit(2)
+		case a == "--no-prompt", a == "--non-interactive":
+			// no-op: declarative -f mode never prompts. Accept the flag silently
+			// so a wrapping script can pass it unconditionally without forking
+			// per-mode arg lists.
 		default:
 			fmt.Fprintf(os.Stderr, "hire: unknown argument %q\n", a)
 			os.Exit(2)
@@ -346,7 +375,7 @@ func cmdHireFile(ctx context.Context, args []string) {
 			})
 		}
 
-		_, localRef, err := hireOneAgent(ctx, c, init.RoomID, a.Image, a.Rank, quotaRaw, vols)
+		_, localRef, err := hireOneAgent(ctx, c, init.RoomID, a.Image, a.Rank, a.Model, quotaRaw, vols)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "hire %s: %v\n", a.Image, err)
 			os.Exit(1)

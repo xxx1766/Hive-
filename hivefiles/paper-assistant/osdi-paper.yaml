@@ -1,0 +1,55 @@
+# OSDI submission team. Reuses the 4 paper-assistant Agents (paper-scout / outline /
+# writer / reviewer) from examples/paper-assistant/; only the corpus + draft volumes
+# differ — paper-osdi-corpus is seeded from examples/paper-assistant-osdi/sample-corpus.
+#
+# Setup:
+#   ./bin/hive build ./examples/paper-assistant/{scout,outline,writer,reviewer}
+#   ./bin/hive volume create paper-osdi-corpus
+#   ./bin/hive volume create paper-osdi-draft
+#   cp examples/paper-assistant-osdi/sample-corpus/*.md $HIVE_STATE/volumes/paper-osdi-corpus/
+#
+# Run:
+#   ROOM=$(./bin/hive hire -f hivefiles/paper-assistant/osdi-paper.yaml)
+#   ./bin/hive run "$ROOM" --target paper-scout    '{"topic":"..."}'
+#   ./bin/hive run "$ROOM" --target paper-outline  '{"hypothesis":"..."}'
+#   ./bin/hive run "$ROOM" --target paper-writer   '{"section":"design"}'   # OSDI-style sections
+#   ./bin/hive run "$ROOM" --target paper-reviewer '{"section":"design"}'
+room: paper-osdi-2027
+entry: paper-outline
+agents:
+  - image: paper-scout:0.1.0
+    rank: staff
+    quota:
+      api_calls:
+        http: 50            # bumped: OSDI scout pulls more incumbent-system papers per topic
+      tokens:
+        "gpt-4o-mini": 30000
+    volumes:
+      - {name: paper-osdi-draft, mode: rw, mountpoint: /shared/draft}
+
+  - image: paper-outline:0.1.0
+    rank: staff
+    quota:
+      tokens:
+        "gpt-4o-mini": 25000
+    volumes:
+      - {name: paper-osdi-corpus, mode: ro, mountpoint: /shared/corpus}
+      - {name: paper-osdi-draft,  mode: rw, mountpoint: /shared/draft}
+
+  - image: paper-writer:0.1.0
+    rank: manager
+    quota:
+      tokens:
+        "gpt-4o-mini": 120000   # bumped: OSDI §Design / §Eval are long — manager Rank + bigger budget
+    volumes:
+      - {name: paper-osdi-corpus, mode: ro, mountpoint: /shared/corpus}
+      - {name: paper-osdi-draft,  mode: rw, mountpoint: /shared/draft}
+
+  - image: paper-reviewer:0.1.0
+    rank: staff
+    quota:
+      tokens:
+        "gpt-4o-mini": 25000
+    volumes:
+      - {name: paper-osdi-corpus, mode: ro, mountpoint: /shared/corpus}
+      - {name: paper-osdi-draft,  mode: ro, mountpoint: /shared/draft}    # reviewer = read-only by Rank policy

@@ -38,6 +38,10 @@ const (
 type Member struct {
 	Image image.Ref
 	Rank  *rank.Rank
+	// Model, when non-empty, overrides the manifest's default LLM model
+	// for this hire (sets HIVE_MODEL env). Stored on the Member so
+	// daemon-restart recovery can replay the original hire intent.
+	Model string
 	// QuotaOverride is set when Hivefile / CLI overrides the Rank's default
 	// quota for this specific hire. nil ⇒ use Rank.Quota unchanged.
 	QuotaOverride *rank.Quota
@@ -194,6 +198,9 @@ func (r *Room) Member(imageName string) *Member {
 // positional args. Future knobs (attach policy, resource class, ...) go here.
 type HireOpts struct {
 	Rank          *rank.Rank
+	// Model is the LLM model override (empty ⇒ keep manifest default).
+	// Stored on Member so persistRoom can serialise it for recovery.
+	Model         string
 	QuotaOverride *rank.Quota // nil means "use Rank.Quota defaults"
 	Mounts        []ns.Mount  // extra bind mounts inside the sandbox (volumes)
 	// Volumes is the original wire-form list (name+mountpoint+mode) the
@@ -247,6 +254,7 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 	member := &Member{
 		Image:         img.Ref(),
 		Rank:          rk,
+		Model:         opts.Model,
 		QuotaOverride: opts.QuotaOverride,
 		Mounts:        opts.Mounts,
 		Volumes:       opts.Volumes,

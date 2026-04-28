@@ -78,7 +78,16 @@ hived. Prints the RoomID; capture it for subsequent hire/run/team/stop.`,
 		long: `Two shapes:
 
 1. Single hire (Room must already exist):
-     hive hire <room> <ref> [--rank <name>] [--quota <json>] [--volume <n>:<mp>[:<m>]]...
+     hive hire <room> <ref> [--rank <name>] [--model <name>] [--quota <json>] [--volume <n>:<mp>[:<m>]]... [--no-prompt]
+
+   When stdin is a terminal AND no override flags are given, hire prompts
+   interactively for rank / model / tokens / http / volumes (Enter to keep
+   manifest defaults; Ctrl-D to skip remaining). Pass --no-prompt to disable
+   even on a TTY. Piped/scripted invocations never prompt.
+
+   --model overrides the manifest's 'model:' field (sets HIVE_MODEL env).
+   Useful when running through a non-OpenAI-direct gateway (e.g. GMI's
+   openai/gpt-5.4-mini) without editing the agent's yaml + rebuilding.
 
    <ref> may be:
      name:version                             local Agent (from the store)
@@ -89,6 +98,10 @@ hived. Prints the RoomID; capture it for subsequent hire/run/team/stop.`,
    Flags:
      --rank <name>             override the Agent's manifest default Rank
                                (intern / staff / manager / director)
+     --model <name>            override the Agent's manifest LLM model (sets
+                               HIVE_MODEL). Skill agents pick this up directly;
+                               workflow agents pick it up only when their
+                               flow.json doesn't pin "model" explicitly.
      --quota <json>            override per-resource quota caps. JSON shape:
                                  {"tokens":{"gpt-4o-mini":500},"api_calls":{"http":5}}
                                Partial: keys not in the JSON keep the Rank default.

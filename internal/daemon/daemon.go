@@ -632,6 +632,7 @@ func (d *Daemon) handleAgentHire(ctx context.Context, params json.RawMessage, _ 
 	m, err := d.hireFromConfig(r, hireConfig{
 		Image:     p.Image,
 		RankName:  p.RankName,
+		Model:     p.Model,
 		QuotaOver: p.QuotaOverr,
 		Volumes:   p.Volumes,
 	})
@@ -654,6 +655,7 @@ func (d *Daemon) handleAgentHire(ctx context.Context, params json.RawMessage, _ 
 type hireConfig struct {
 	Image     ipc.ImageRef
 	RankName  string
+	Model     string // overrides manifest.Model (HIVE_MODEL); empty ⇒ keep manifest's
 	QuotaOver json.RawMessage
 	Volumes   []ipc.VolumeMountRef
 }
@@ -696,7 +698,7 @@ func (d *Daemon) hireFromConfig(r *room.Room, cfg hireConfig) (*room.Member, err
 		logFile = f
 	}
 
-	preparedImg, extraEnv, err := d.prepareImageByKind(img)
+	preparedImg, extraEnv, err := d.prepareImageByKind(img, cfg.Model)
 	if err != nil {
 		if logFile != nil {
 			_ = logFile.Close()
@@ -754,6 +756,7 @@ func (d *Daemon) hireFromConfig(r *room.Room, cfg hireConfig) (*room.Member, err
 
 	m, err := r.Hire(preparedImg, room.HireOpts{
 		Rank:          rk,
+		Model:         cfg.Model,
 		QuotaOverride: quotaOverride,
 		Mounts:        mounts,
 		Volumes:       cfg.Volumes,
@@ -866,6 +869,7 @@ func snapshotFor(r *room.Room) *roomstate.Snapshot {
 		ms := roomstate.MemberSnap{
 			Image:    ipc.ImageRef{Name: m.Image.Name, Version: m.Image.Version},
 			RankName: m.Rank.Name,
+			Model:    m.Model,
 			Volumes:  m.Volumes,
 			HiredAt:  m.HiredAt,
 		}
@@ -925,6 +929,7 @@ func (d *Daemon) recoverOne(snap roomstate.Loaded) error {
 		_, err := d.hireFromConfig(r, hireConfig{
 			Image:     ms.Image,
 			RankName:  ms.RankName,
+			Model:     ms.Model,
 			QuotaOver: ms.QuotaOver,
 			Volumes:   ms.Volumes,
 		})

@@ -44,31 +44,35 @@ func (d *Daemon) runnerBin(name string) (string, error) {
 // For kind=binary (or unknown) it returns the image untouched. For a
 // runner-driven kind (skill, workflow) it hardlinks the runner into the
 // image dir, rewrites Entry, and returns the env vars the runner needs.
-func (d *Daemon) prepareImageByKind(img *image.Image) (*image.Image, []string, error) {
+//
+// modelOverride, when non-empty, replaces the manifest's Model in HIVE_MODEL
+// so per-hire `--model X` (or Hivefile `model:`) actually changes which
+// LLM the Agent talks to.
+func (d *Daemon) prepareImageByKind(img *image.Image, modelOverride string) (*image.Image, []string, error) {
 	switch img.Manifest.Kind {
 	case image.KindSkill:
-		return d.prepareSkillImage(img)
+		return d.prepareSkillImage(img, modelOverride)
 	case image.KindWorkflow:
-		return d.prepareWorkflowImage(img)
+		return d.prepareWorkflowImage(img, modelOverride)
 	default:
 		return img, nil, nil
 	}
 }
 
 // prepareSkillImage: link hive-skill-runner + set HIVE_SKILL_PATH + shared env.
-func (d *Daemon) prepareSkillImage(img *image.Image) (*image.Image, []string, error) {
+func (d *Daemon) prepareSkillImage(img *image.Image, modelOverride string) (*image.Image, []string, error) {
 	prepared, err := d.linkRunner(img, image.KindSkill)
 	if err != nil {
 		return nil, nil, err
 	}
 	env := []string{"HIVE_SKILL_PATH=/app/" + img.Manifest.Skill}
-	env = append(env, sharedRunnerEnv(img)...)
+	env = append(env, sharedRunnerEnv(img, modelOverride)...)
 	return prepared, env, nil
 }
 
 // prepareWorkflowImage: link hive-workflow-runner; set exactly one of
 // HIVE_WORKFLOW_PATH (static) or HIVE_PLANNER_PATH (LLM) + shared env.
-func (d *Daemon) prepareWorkflowImage(img *image.Image) (*image.Image, []string, error) {
+func (d *Daemon) prepareWorkflowImage(img *image.Image, modelOverride string) (*image.Image, []string, error) {
 	prepared, err := d.linkRunner(img, image.KindWorkflow)
 	if err != nil {
 		return nil, nil, err
@@ -82,14 +86,21 @@ func (d *Daemon) prepareWorkflowImage(img *image.Image) (*image.Image, []string,
 	default:
 		return nil, nil, fmt.Errorf("kind=workflow but neither workflow: nor planner: set")
 	}
-	env = append(env, sharedRunnerEnv(img)...)
+	env = append(env, sharedRunnerEnv(img, modelOverride)...)
 	return prepared, env, nil
 }
 
-// sharedRunnerEnv: env vars both runner kinds read.
-func sharedRunnerEnv(img *image.Image) []string {
+// sharedRunnerEnv: env vars both runner kinds read. modelOverride wins
+// over the manifest's default; either may be empty (then HIVE_MODEL is
+// emitted as an empty value and the runner falls back to its built-in
+// default — currently "gpt-4o-mini" in skill-runner).
+func sharedRunnerEnv(img *image.Image, modelOverride string) []string {
+	model := img.Manifest.Model
+	if modelOverride != "" {
+		model = modelOverride
+	}
 	return []string{
-		"HIVE_MODEL=" + img.Manifest.Model,
+		"HIVE_MODEL=" + model,
 		"HIVE_TOOLS=" + strings.Join(img.Manifest.Tools, ","),
 	}
 }
