@@ -90,8 +90,12 @@ type RoomMember struct {
 	Rank      string         `json:"rank"`
 	State     string         `json:"state"`
 	Model     string         `json:"model,omitempty"`
-	Volumes   []VolumeMount  `json:"volumes,omitempty"`
-	Quota     map[string]any `json:"quota,omitempty"`
+	// Parent is the image name of the auto-hiring Agent (empty for
+	// top-level CLI / Hivefile hires). UI uses it to render the
+	// subordinate tree.
+	Parent  string         `json:"parent,omitempty"`
+	Volumes []VolumeMount  `json:"volumes,omitempty"`
+	Quota   map[string]any `json:"quota,omitempty"`
 }
 
 type VolumeMount struct {

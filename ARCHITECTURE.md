@@ -326,9 +326,68 @@ planned ────► planned ────► active ────► done
 **与 Volume 的关系**：Conversation 走 transcript 的"消息流"轨道；Volume 走"持久化产出"轨道。一个 paper-writer Agent 可能既 PeerSend 给 paper-outline 要 TOC（→ 进 Conversation），又 fs_write 到 `paper-osdi-draft/design.md`（→ 进 Volume）。两条轨道在 Hive 里都是 first-class，UI 也并列展示。
 
 **v2（不在本期）**：
-1. **自动招聘下属**：manager-rank Agent 在 ReAct 循环里能调 `hive.HireJunior(ref, rank, quota)`；daemon 强制 rank 不超过自身、配额从自身 carve。
-2. **跨 Room Conversation**：通过 Volume 桥接两个 Room 的 transcript（类比现有的跨 Room events）。
-3. **Subordinate tree**：UI 渲染"谁招聘了谁"的层级，让委托关系可观察。
+1. **跨 Room Conversation**：通过 Volume 桥接两个 Room 的 transcript（类比现有的跨 Room events）。
+2. **Refund-on-exit**：sub-agent 退出时未用完的配额自动还给 parent —— 现在的 carve 是硬扣，余量丢弃。
+
+### Auto-hire 与配额 carve
+
+Conversation 解决了"agent 之间多轮对话"，自动招聘下属解决的是另一件事：**任务跑到一半发现需要新角色，能在沙箱里自动补人**。SDK 提供 `hive.HireJunior(ctx, ref, rank, opts)`，daemon 端强制三条规则：
+
+```
+manager-A.HireJunior(intern, "paper-outline:0.1.0", quota={tokens:5000})
+                                   ↓
+                ┌──────────────── daemon ────────────────┐
+                │  1. rank.CanHire(A, intern):           │
+                │     A.HireAllowed && intern.Level < A  │ ✓
+                │  2. quota.Consume(parent=A, 5000):     │
+                │     A.remaining ≥ 5000                 │ atomic
+                │  3. hireFromConfig(parent=A, …):       │
+                │     正常 hire 流程 + Member.Parent="A" │
+                └────────────────────────────────────────┘
+                                   ↓
+                  intern (paper-outline) 在 Room 里跑起来
+                  A.PeerSend(intern, ..., WithConv(C)) 即可委派
+```
+
+**三条规则细化**：
+
+1. **Rank policy** (`rank.CanHire`)：
+   - 调用方必须有 `HireAllowed=true`（默认只 manager + director 有）
+   - 招的 rank 必须 **strictly less than** 调用方（manager 招 staff/intern 都行；招 manager 不行 —— 没有 peer-cycle delegation；intern/staff 无招聘权）
+   - 同 Room 内 image 名字唯一（沿用 hire 既有约束）
+
+2. **Quota carve** (`carveQuotaFromParent`)：每个 token / api_call 桶都通过 `quota.Consume` 原子地从 parent 扣减；任何一桶扣不动，整个 hire 失败（partial-rollback 在 v2）。配额是**硬扣** —— sub-agent 没用完的不会自动回流给 parent；想精打细算就少 carve、再开第二个 sub-agent。Parent 没限额的桶（director 的所有桶、未声明的 model）走 unlimited 通路，不扣 parent，但 child 的 hard cap 仍生效。
+
+3. **Subordinate tree** (`Member.Parent`)：每个 sub-agent 的 `Parent` 字段记录招它的 agent 的 image 名。`roomstate.MemberSnap.Parent` 持久化到 state.json，**daemon-restart 后整棵树原样恢复**。UI Team tab 用这个字段渲染 indent 树，timeline / kanban 维度可以按 parent 过滤。
+
+**为什么 strict less than 而不是 ≤**：peer-cycle 风险。如果 manager-A 能招 manager-B，B 能反过来招 A，配额会在两个桶之间打转，尤其在 refund-on-exit 落地后会变成永动机。strict less 把树结构钉死。
+
+**SDK 用法（典型 coordinator pattern）**：
+
+```go
+func main() {
+    a := hive.MustConnect()
+    for task := range a.Tasks() {
+        // 任务来了，发现需要先跑个 outline。临时招一个 intern。
+        outliner, err := a.HireJunior(ctx, "paper-outline:0.1.0", "intern",
+            hive.HireJuniorOpts{
+                Quota: &hive.Quota{Tokens: map[string]int{"openai/gpt-5.4-mini": 5000}},
+                Volumes: []hive.VolumeMount{{Name: "paper-corpus", Mode: "ro", Mountpoint: "/shared/corpus"}},
+            })
+        if err != nil { task.Fail(2, err.Error()); continue }
+        // 委派工作：peer_send + Conversation conv_id。
+        a.PeerSend(ctx, outliner, map[string]any{"hypothesis": "..."}, hive.WithConv(task.ConvID))
+        // 收到 intern 回复后再继续 —— 见 runFromPeer 路径。
+    }
+}
+```
+
+**Wire**：新 IPC method `hire/junior`（Agent → Hive），params `{ref, rank, tag?, model?, quota?, volumes?}`，returns `{image_name, rank, parent}`。CLI 不暴露这个 method —— 招聘下属是 agent 运行时行为，不是 user 直接动作。
+
+**v2（不在本期）**：
+1. **Refund-on-exit**：subordinate exit 时把未消耗的 carve 自动还给 parent。需要 quota.Actor 加 transactional transfer op。
+2. **HTTP UI 招聘控件**：UI 上点"+招个下属"直接走 hire/junior（目前只能从 SDK 调）。
+3. **跨 Rank carve**：让 manager 把自己的 director-only 工具临时下放给 sub-agent —— 当前 sub-agent 的能力固定取自 sub-agent 的 Rank，无法跨级。
 
 ---
 

@@ -19,6 +19,14 @@ import (
 type Rank struct {
 	Name string
 
+	// Level orders Ranks for "manager hires intern" semantics. Higher
+	// number = more senior. The default registry assigns
+	// intern=0, staff=1, manager=2, director=3. Auto-hire policy
+	// (CanHire) only allows hiring strictly below: a manager can hire
+	// staff or intern but not another manager — this rules out
+	// peer-cycle delegation and keeps the subordinate tree, well, a tree.
+	Level int
+
 	// FS: prefix-based allow lists. Empty means "nothing allowed".
 	// Paths are as the Agent sees them (post-pivot_root), always absolute,
 	// and must start with one of the prefixes to be allowed.
@@ -41,8 +49,39 @@ type Rank struct {
 	// future work — see the aitoolproxy package.
 	AIToolAllowed bool
 
+	// HireAllowed: whether the Agent may call hire/junior to spawn a
+	// subordinate Agent at runtime. Defaults to false; manager and
+	// director are the only built-in Ranks that grant it. Ranks below
+	// can never auto-hire (an intern that wants help has to peer/send
+	// out and wait for someone else to hire — by design).
+	HireAllowed bool
+
 	// Default quotas; a Hire-time override may raise or lower these.
 	Quota Quota
+}
+
+// CanHire reports whether self may auto-hire `child` as a subordinate.
+// Three rules:
+//
+//  1. self.HireAllowed must be true (intern/staff cannot auto-hire).
+//  2. child.Level must be strictly less than self.Level (no peer or
+//     upward hires — keeps the subordinate graph a tree).
+//  3. self.Level >= child.Level rule is implied by rule 2.
+//
+// Returns a descriptive error when denied so the daemon can surface it
+// to the caller as a permission_denied with a useful message.
+func (self *Rank) CanHire(child *Rank) error {
+	if self == nil || child == nil {
+		return fmt.Errorf("rank: nil rank in CanHire")
+	}
+	if !self.HireAllowed {
+		return fmt.Errorf("rank %q is not allowed to hire (HireAllowed=false)", self.Name)
+	}
+	if child.Level >= self.Level {
+		return fmt.Errorf("rank %q (level %d) cannot hire rank %q (level %d): subordinate must be strictly lower",
+			self.Name, self.Level, child.Name, child.Level)
+	}
+	return nil
 }
 
 // Quota caps are hard maximums per (Room, Agent) pair.
@@ -134,6 +173,7 @@ func DefaultRegistry() *Registry {
 	// search/data-gathering duties (the canonical arxiv-search use case).
 	r.ranks["intern"] = &Rank{
 		Name:       "intern",
+		Level:      0,
 		FSRead:     []string{"/app", "/tmp"},
 		FSWrite:    []string{"/tmp"},
 		NetAllowed: true,
@@ -143,6 +183,7 @@ func DefaultRegistry() *Registry {
 	}
 	r.ranks["staff"] = &Rank{
 		Name:          "staff",
+		Level:         1,
 		FSRead:        []string{"/app", "/tmp", "/data"},
 		FSWrite:       []string{"/tmp", "/data"},
 		NetAllowed:    true,
@@ -156,12 +197,14 @@ func DefaultRegistry() *Registry {
 	}
 	r.ranks["manager"] = &Rank{
 		Name:          "manager",
+		Level:         2,
 		FSRead:        []string{"/"},
 		FSWrite:       []string{"/tmp", "/data"},
 		NetAllowed:    true,
 		LLMAllowed:    true,
 		MemoryAllowed: true,
 		AIToolAllowed: true,
+		HireAllowed:   true,
 		Quota: Quota{
 			Tokens:   map[string]int{"gpt-4o-mini": 50000},
 			APICalls: map[string]int{"http": 200, "ai_tool:claude-code": 100},
@@ -169,12 +212,14 @@ func DefaultRegistry() *Registry {
 	}
 	r.ranks["director"] = &Rank{
 		Name:          "director",
+		Level:         3,
 		FSRead:        []string{"/"},
 		FSWrite:       []string{"/"},
 		NetAllowed:    true,
 		LLMAllowed:    true,
 		MemoryAllowed: true,
 		AIToolAllowed: true,
+		HireAllowed:   true,
 		// Director has unlimited quota; we signal that by leaving maps nil,
 		// and the proxy layer treats "no limit entry" as "unlimited". See
 		// quota.Actor.Consume.

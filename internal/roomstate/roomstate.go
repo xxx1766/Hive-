@@ -52,6 +52,10 @@ type MemberSnap struct {
 	QuotaOver json.RawMessage      `json:"quota,omitempty"`
 	Volumes   []ipc.VolumeMountRef `json:"volumes,omitempty"`
 	HiredAt   time.Time            `json:"hired_at"`
+	// Parent (when set) records the image name of the auto-hiring Agent.
+	// Empty for top-level hires (CLI / Hivefile). Recovery preserves this
+	// so the subordinate-tree shape survives daemon restart.
+	Parent    string               `json:"parent,omitempty"`
 }
 
 // Loaded is one Snapshot plus its derived RoomID (the directory name).

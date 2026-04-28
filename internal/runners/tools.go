@@ -22,6 +22,10 @@ const (
 	GroupLLM    = "llm"
 	GroupMemory = "memory"
 	GroupAITool = "ai_tool"
+	// GroupHire grants the hire_junior tool — manager+ rank Agents only,
+	// daemon enforces rank.CanHire on every call. Skill / workflow agents
+	// must list "hire" in their manifest tools[] to opt in.
+	GroupHire = "hire"
 )
 
 // ToolGroup classifies a tool name into its group, or "" if unknown.
@@ -39,6 +43,8 @@ func ToolGroup(tool string) string {
 		return GroupMemory
 	case tool == "ai_tool_invoke":
 		return GroupAITool
+	case tool == "hire_junior":
+		return GroupHire
 	}
 	return ""
 }
@@ -192,6 +198,44 @@ func DispatchTool(ctx context.Context, a *hive.Agent, name string, args map[stri
 		}
 		return map[string]any{"output": out}, nil
 
+	case "hire_junior":
+		ref := getString(args, "ref")
+		if ref == "" {
+			return nil, fmt.Errorf("hire_junior: ref is required")
+		}
+		rk := getString(args, "rank")
+		if rk == "" {
+			return nil, fmt.Errorf("hire_junior: rank is required")
+		}
+		opts := hive.HireJuniorOpts{
+			Tag:   getString(args, "tag"),
+			Model: getString(args, "model"),
+		}
+		if q, ok := args["quota"].(map[string]any); ok {
+			opts.Quota = &hive.Quota{
+				Tokens:   intMap(q["tokens"]),
+				APICalls: intMap(q["api_calls"]),
+			}
+		}
+		if vs, ok := args["volumes"].([]any); ok {
+			for _, raw := range vs {
+				v, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				opts.Volumes = append(opts.Volumes, hive.VolumeMount{
+					Name:       getString(v, "name"),
+					Mode:       getString(v, "mode"),
+					Mountpoint: getString(v, "mountpoint"),
+				})
+			}
+		}
+		image, err := a.HireJunior(ctx, ref, rk, opts)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"image": image, "rank": rk}, nil
+
 	case "llm_complete":
 		model := getString(args, "model")
 		if model == "" {
@@ -247,6 +291,28 @@ func getStringMap(m map[string]any, key string) map[string]string {
 	for k, v := range raw {
 		if s, ok := v.(string); ok {
 			out[k] = s
+		}
+	}
+	return out
+}
+
+// intMap coerces a JSON-decoded any to map[string]int. JSON numbers
+// decode as float64 by default, so integer-valued floats are accepted.
+// Anything else for a value (string, nested object) is dropped silently.
+func intMap(v any) map[string]int {
+	raw, _ := v.(map[string]any)
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(raw))
+	for k, x := range raw {
+		switch t := x.(type) {
+		case float64:
+			out[k] = int(t)
+		case int:
+			out[k] = t
+		case int64:
+			out[k] = int(t)
 		}
 	}
 	return out

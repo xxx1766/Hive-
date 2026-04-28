@@ -308,6 +308,84 @@ func (a *Agent) FSList(ctx context.Context, path string) ([]FSEntry, error) {
 	return res.Entries, nil
 }
 
+// HireJuniorOpts shapes the optional fields of HireJunior. Only Quota
+// is commonly set — daemon will reject the call if the parent's
+// remaining budget is below what's requested.
+type HireJuniorOpts struct {
+	// Tag is a UI label; defaults to the image name when empty.
+	Tag string
+	// Model overrides the manifest's default LLM model (HIVE_MODEL env).
+	Model string
+	// Quota tokens / api_calls carved out of the caller's remaining
+	// budget. Each key drains the parent's same-named bucket.
+	Quota *Quota
+	// Volumes the child should mount. Names must already exist in the
+	// daemon's volume manager.
+	Volumes []VolumeMount
+}
+
+// Quota mirrors the daemon's quota wire form. Tokens map keys are model
+// names ("gpt-4o-mini", "openai/gpt-5.4-mini"); APICalls keys are
+// endpoint categories ("http", "ai_tool:claude-code").
+type Quota struct {
+	Tokens   map[string]int
+	APICalls map[string]int
+}
+
+// VolumeMount declares one volume the new subordinate should see.
+type VolumeMount struct {
+	Name       string
+	Mode       string // "ro" or "rw"; defaults to "ro" daemon-side
+	Mountpoint string
+}
+
+// HireJunior spawns a subordinate Agent in the caller's Room and
+// returns its image name (so the caller can PeerSend / WithConv to it).
+// Manager+ rank only: the daemon validates rank.CanHire(self, requested)
+// and carves opts.Quota out of the parent's remaining budget atomically.
+//
+// Common usage in a coordinator pattern:
+//
+//	child, err := a.HireJunior(ctx, "paper-outline:0.1.0", "intern",
+//	    hive.HireJuniorOpts{Quota: &hive.Quota{Tokens: map[string]int{"gpt-4o-mini": 5000}}})
+//	if err != nil { ... }
+//	a.PeerSend(ctx, child, payload, hive.WithConv(convID))
+func (a *Agent) HireJunior(ctx context.Context, ref, rank string, opts ...HireJuniorOpts) (string, error) {
+	o := HireJuniorOpts{}
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	args := map[string]any{"ref": ref, "rank": rank}
+	if o.Tag != "" {
+		args["tag"] = o.Tag
+	}
+	if o.Model != "" {
+		args["model"] = o.Model
+	}
+	if o.Quota != nil {
+		args["quota"] = map[string]any{
+			"tokens":    o.Quota.Tokens,
+			"api_calls": o.Quota.APICalls,
+		}
+	}
+	if len(o.Volumes) > 0 {
+		vols := make([]map[string]any, len(o.Volumes))
+		for i, v := range o.Volumes {
+			vols[i] = map[string]any{"name": v.Name, "mode": v.Mode, "mountpoint": v.Mountpoint}
+		}
+		args["volumes"] = vols
+	}
+	var res struct {
+		ImageName string `json:"image_name"`
+		Rank      string `json:"rank"`
+		Parent    string `json:"parent"`
+	}
+	if err := a.call(ctx, "hire/junior", args, &res); err != nil {
+		return "", err
+	}
+	return res.ImageName, nil
+}
+
 // PeerSend delivers a message to another Agent in the same Room. Pass
 // WithConv(convID) to make this hop count toward a Conversation; without
 // it the message is ad-hoc (no transcript, no round budget).

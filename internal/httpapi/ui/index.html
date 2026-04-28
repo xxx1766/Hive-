@@ -587,35 +587,75 @@ async function loadVolumeFile(path) {
 }
 
 // ── Team tab ──────────────────────────────────────────────────────
+//
+// Renders Members as a subordinate tree: top-level hires (no parent)
+// at depth 0; auto-hired Agents indented under their parent. The same
+// row schema (agent / rank / model / volumes / quota) is preserved —
+// only the leftmost cell gains an indent + connector to convey lineage.
 function renderTeam() {
   const tbody = document.getElementById('team-body');
   tbody.innerHTML = '';
   if (!state.currentRoom) return;
-  for (const m of (state.currentRoom.members || [])) {
-    const tr = document.createElement('tr');
-    tr.className = 'border-b border-slate-100';
-    const vols = (m.volumes || []).map(v => `${v.name}(${v.mode})`).join(', ');
-    let quotaStr = '';
-    if (m.quota) {
-      const parts = [];
-      for (const k in m.quota) {
-        if (typeof m.quota[k] === 'object') {
-          for (const k2 in m.quota[k]) parts.push(`${k2}: ${m.quota[k][k2]}`);
-        } else {
-          parts.push(`${k}: ${m.quota[k]}`);
-        }
-      }
-      quotaStr = parts.join(' · ');
-    }
-    tr.innerHTML = `
-      <td class="px-3 py-2"><b style="color:${colorFor(m.image)}">${escapeHtml(m.image)}</b></td>
-      <td class="px-3 py-2 text-xs">${escapeHtml(m.rank)}</td>
-      <td class="px-3 py-2 text-xs font-mono">${escapeHtml(m.model || '(default)')}</td>
-      <td class="px-3 py-2 text-xs">${escapeHtml(vols)}</td>
-      <td class="px-3 py-2 text-xs text-slate-500">${escapeHtml(quotaStr)}</td>
-    `;
-    tbody.appendChild(tr);
+
+  const members = state.currentRoom.members || [];
+  // Index members by image name for O(1) lookup.
+  const byName = {};
+  for (const m of members) byName[m.image] = m;
+
+  // Group children by parent; top-level (no parent) under "".
+  const childrenOf = {};
+  for (const m of members) {
+    const p = m.parent || '';
+    (childrenOf[p] = childrenOf[p] || []).push(m);
   }
+
+  // Stable tree DFS, rendering rows in depth order.
+  const seen = new Set();
+  function emit(image, depth) {
+    if (seen.has(image)) return; // cycle guard (shouldn't happen — daemon enforces tree)
+    seen.add(image);
+    const m = byName[image];
+    if (!m) return;
+    tbody.appendChild(teamRow(m, depth));
+    for (const c of (childrenOf[image] || [])) emit(c.image, depth + 1);
+  }
+  for (const top of (childrenOf[''] || [])) emit(top.image, 0);
+
+  // Safety net: if any member somehow wasn't reachable from the root
+  // (e.g. orphan parent reference after a rank rename), still render.
+  for (const m of members) {
+    if (!seen.has(m.image)) tbody.appendChild(teamRow(m, 0));
+  }
+}
+
+function teamRow(m, depth) {
+  const tr = document.createElement('tr');
+  tr.className = 'border-b border-slate-100';
+  const vols = (m.volumes || []).map(v => `${v.name}(${v.mode})`).join(', ');
+  let quotaStr = '';
+  if (m.quota) {
+    const parts = [];
+    for (const k in m.quota) {
+      if (typeof m.quota[k] === 'object') {
+        for (const k2 in m.quota[k]) parts.push(`${k2}: ${m.quota[k][k2]}`);
+      } else {
+        parts.push(`${k}: ${m.quota[k]}`);
+      }
+    }
+    quotaStr = parts.join(' · ');
+  }
+  // Connector glyph: └─ for any sub-row, indented N levels deep.
+  const indent = depth > 0
+    ? `<span class="text-slate-300 font-mono">${'│ '.repeat(depth-1)}└─ </span>`
+    : '';
+  tr.innerHTML = `
+    <td class="px-3 py-2">${indent}<b style="color:${colorFor(m.image)}">${escapeHtml(m.image)}</b>${m.parent ? ` <span class="text-[10px] text-slate-400 ml-1">(hired by ${escapeHtml(m.parent)})</span>` : ''}</td>
+    <td class="px-3 py-2 text-xs">${escapeHtml(m.rank)}</td>
+    <td class="px-3 py-2 text-xs font-mono">${escapeHtml(m.model || '(default)')}</td>
+    <td class="px-3 py-2 text-xs">${escapeHtml(vols)}</td>
+    <td class="px-3 py-2 text-xs text-slate-500">${escapeHtml(quotaStr)}</td>
+  `;
+  return tr;
 }
 
 // ── Tab switching ─────────────────────────────────────────────────

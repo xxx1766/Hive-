@@ -56,6 +56,11 @@ type Member struct {
 	Volumes []ipc.VolumeMountRef
 	Conn    *agent.Conn
 	HiredAt time.Time
+	// Parent is the image name of the Agent that auto-hired this Member
+	// (via SDK HireJunior). Empty for top-level hires (CLI, Hivefile).
+	// Recovery preserves it so the subordinate-tree shape survives a
+	// daemon restart.
+	Parent string
 }
 
 // EffectiveQuota merges the Rank's default quota with any per-hire override.
@@ -225,6 +230,11 @@ type HireOpts struct {
 	// the Agent exits so ownership is unambiguous.
 	LogFile  io.WriteCloser
 	ExtraEnv []string
+	// Parent is the image name of the auto-hiring Agent. Empty for
+	// top-level hires (CLI / Hivefile). Threaded onto Member so the
+	// daemon can serialise the subordinate tree for restart recovery
+	// and surface it to UI / audit.
+	Parent string
 }
 
 // Hire spawns an Agent process and attaches it to this Room.
@@ -270,6 +280,7 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 		Volumes:       opts.Volumes,
 		Conn:          conn,
 		HiredAt:       time.Now(),
+		Parent:        opts.Parent,
 	}
 
 	// Hooks install handlers BEFORE Start so the Agent can't race past them.

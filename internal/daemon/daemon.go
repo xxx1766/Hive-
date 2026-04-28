@@ -334,6 +334,14 @@ func (d *Daemon) installAgentProxies(r *room.Room, m *room.Member) {
 	m.Conn.Handle(rpc.MethodAIToolInvoke, func(ctx context.Context, params json.RawMessage) (any, error) {
 		return ait.Invoke(ctx, params)
 	})
+
+	// hire/junior — manager+ rank only. Validates rank.CanHire, atomically
+	// carves the requested quota out of the parent's remaining budget,
+	// and installs the subordinate via the same hireFromConfig path that
+	// agent/hire (CLI) and recovery use.
+	m.Conn.Handle(rpc.MethodHireJunior, func(ctx context.Context, params json.RawMessage) (any, error) {
+		return d.handleHireJunior(ctx, r, m, params)
+	})
 }
 
 // ── image/* ──────────────────────────────────────────────────────────────
@@ -747,6 +755,10 @@ type hireConfig struct {
 	Model     string // overrides manifest.Model (HIVE_MODEL); empty ⇒ keep manifest's
 	QuotaOver json.RawMessage
 	Volumes   []ipc.VolumeMountRef
+	// Parent is the auto-hiring Agent's image name (empty ⇒ top-level
+	// CLI / Hivefile hire). Threaded through to room.Member so the
+	// subordinate tree survives daemon restart via roomstate.MemberSnap.
+	Parent string
 }
 
 // hireFromConfig is the single entry point that turns a hireConfig into
@@ -851,6 +863,7 @@ func (d *Daemon) hireFromConfig(r *room.Room, cfg hireConfig) (*room.Member, err
 		Volumes:       cfg.Volumes,
 		LogFile:       logFile,
 		ExtraEnv:      extraEnv,
+		Parent:        cfg.Parent,
 	})
 	if err != nil {
 		if logFile != nil {
@@ -961,6 +974,7 @@ func snapshotFor(r *room.Room) *roomstate.Snapshot {
 			Model:    m.Model,
 			Volumes:  m.Volumes,
 			HiredAt:  m.HiredAt,
+			Parent:   m.Parent,
 		}
 		if m.QuotaOverride != nil {
 			// Re-encode through the wire shape so on-disk state stays
@@ -1021,6 +1035,7 @@ func (d *Daemon) recoverOne(snap roomstate.Loaded) error {
 			Model:     ms.Model,
 			QuotaOver: ms.QuotaOver,
 			Volumes:   ms.Volumes,
+			Parent:    ms.Parent,
 		})
 		if err != nil {
 			log.Printf("hived: recover %s/%s: %v", snap.RoomID, ms.Image.Name, err)

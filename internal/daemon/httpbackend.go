@@ -67,6 +67,7 @@ func (b *httpBackend) RoomDetail(roomID string) (httpapi.RoomDetail, bool) {
 			Rank:      m.Rank.Name,
 			State:     "running",
 			Model:     m.Model,
+			Parent:    m.Parent,
 			Volumes:   vols,
 			Quota:     b.d.remainingQuota(r.ID, m),
 		})

@@ -363,6 +363,11 @@ func buildSystemPrompt(skill string, tools []string) string {
 	if containsAny(tools, []string{runners.GroupAITool}) {
 		b.WriteString(`Tool: ai_tool_invoke — args {"tool": "claude-code", "prompt": string}; runs Claude Code CLI in the Room's /workspace dir, returns {"output": string}` + "\n")
 	}
+	if containsAny(tools, []string{runners.GroupHire}) {
+		b.WriteString(`Tool: hire_junior — args {"ref": "name:version", "rank": "intern|staff", "quota"?: {"tokens": {model: int}, "api_calls": {key: int}}, "volumes"?: [{"name","mode","mountpoint"}]}; ` +
+			`spawns a subordinate Agent (manager+ rank only). Daemon enforces rank.CanHire (strictly lower) and atomically carves the quota out of your remaining budget. ` +
+			`Returns {"image": string} — peer_send to that image to delegate work. Use this when a task needs a role that isn't already in the Room.` + "\n")
+	}
 	return b.String()
 }
 
