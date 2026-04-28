@@ -5,17 +5,25 @@ import "encoding/json"
 // ── Hive → Agent ──────────────────────────────────────────────────────────
 
 // TaskRunParams is delivered when Hive wants the Agent to start working.
-// Input is an arbitrary JSON payload the Agent understands.
+// Input is an arbitrary JSON payload the Agent understands. ConvID is
+// non-empty when this task is the entry-point of a Conversation; the
+// Agent should pass it through on outbound peer/send so the daemon can
+// attribute the hop to that transcript.
 type TaskRunParams struct {
 	TaskID string          `json:"task_id"`
 	Goal   string          `json:"goal,omitempty"`
 	Input  json.RawMessage `json:"input,omitempty"`
+	ConvID string          `json:"conv_id,omitempty"`
 }
 
 // PeerRecvParams carries an inbound message from another Agent in the same Room.
+// ConvID propagates Conversation membership — when set, replies via peer/send
+// should include the same ConvID so the round counter advances on the right
+// transcript. Empty ConvID = ad-hoc peer message (not part of any Conversation).
 type PeerRecvParams struct {
-	From    string          `json:"from"`    // source Agent's image name
-	Payload json.RawMessage `json:"payload"` // opaque to Hive
+	From    string          `json:"from"`              // source Agent's image name
+	Payload json.RawMessage `json:"payload"`           // opaque to Hive
+	ConvID  string          `json:"conv_id,omitempty"` // non-empty = part of a Conversation
 }
 
 // EventsRecvParams is delivered to a subscribed Agent when another Agent
@@ -165,6 +173,7 @@ type AIToolInvokeResult struct {
 type PeerSendParams struct {
 	To      string          `json:"to"` // target Agent's image name (unique within Room)
 	Payload json.RawMessage `json:"payload"`
+	ConvID  string          `json:"conv_id,omitempty"` // non-empty = round counts toward a Conversation
 }
 
 // ── Agent → Hive: events (real-time pub/sub, Room-private or Volume-shared)

@@ -1,0 +1,662 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hive</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }
+  .scrollbar::-webkit-scrollbar-thumb { background: rgba(0,0,0,.18); border-radius: 4px; }
+  .conv-card { transition: transform .12s ease; }
+  .conv-card:hover { transform: translateY(-1px); }
+  .badge { font-variant-numeric: tabular-nums; }
+  .typing { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #2563eb; margin: 0 1px; animation: typing 1.2s infinite ease-in-out both; }
+  .typing:nth-child(2) { animation-delay: .15s; }
+  .typing:nth-child(3) { animation-delay: .3s; }
+  @keyframes typing { 0%,80%,100% { transform: scale(.5); opacity: .35; } 40% { transform: scale(1); opacity: 1; } }
+  pre.payload { white-space: pre-wrap; word-break: break-word; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+
+<header class="bg-white border-b border-slate-200 sticky top-0 z-20">
+  <div class="max-w-[1400px] mx-auto px-4 py-3 flex items-center gap-4">
+    <h1 class="text-lg font-bold tracking-tight">🐝 Hive</h1>
+    <select id="room-select" class="border border-slate-300 rounded px-2 py-1 text-sm bg-white"></select>
+    <span id="conn-status" class="text-xs text-slate-500 ml-auto"></span>
+  </div>
+  <nav class="max-w-[1400px] mx-auto px-4 flex gap-1 -mb-px">
+    <button data-tab="conversations" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-blue-500 text-blue-600">Conversations</button>
+    <button data-tab="volumes" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-800">Volumes</button>
+    <button data-tab="team" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-800">Team</button>
+  </nav>
+</header>
+
+<main class="max-w-[1400px] mx-auto p-4">
+
+  <!-- ── Conversations tab ──────────────────────────────────────────── -->
+  <section id="tab-conversations" class="tab-panel">
+    <div class="flex items-center justify-between mb-3">
+      <div class="text-sm text-slate-600">
+        <span id="conv-room-tag" class="font-medium"></span>
+        <span class="text-slate-400 mx-2">|</span>
+        <span id="conv-counts"></span>
+      </div>
+      <button id="new-conv-btn" class="bg-blue-600 hover:bg-blue-700 text-white text-sm px-3 py-1.5 rounded font-medium">+ New conversation</button>
+    </div>
+
+    <div class="grid grid-cols-3 gap-4">
+      <!-- Plan column -->
+      <div class="bg-white rounded-lg shadow-sm border border-slate-200 flex flex-col min-h-[420px]">
+        <div class="px-3 py-2 border-b border-slate-200 flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-slate-400"></span>
+          <span class="font-semibold text-sm">Plan</span>
+          <span id="col-plan-count" class="ml-auto text-xs text-slate-500 badge"></span>
+        </div>
+        <div id="col-plan" class="p-3 space-y-2 flex-1 overflow-y-auto scrollbar"></div>
+      </div>
+
+      <!-- Active column -->
+      <div class="bg-white rounded-lg shadow-sm border border-blue-200 flex flex-col min-h-[420px]">
+        <div class="px-3 py-2 border-b border-blue-200 bg-blue-50/60 flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
+          <span class="font-semibold text-sm">In progress</span>
+          <span id="col-active-count" class="ml-auto text-xs text-blue-600 badge"></span>
+        </div>
+        <div id="col-active" class="p-3 space-y-2 flex-1 overflow-y-auto scrollbar"></div>
+      </div>
+
+      <!-- Done column (also receives failed / cancelled / interrupted) -->
+      <div class="bg-white rounded-lg shadow-sm border border-slate-200 flex flex-col min-h-[420px]">
+        <div class="px-3 py-2 border-b border-slate-200 flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+          <span class="font-semibold text-sm">Done</span>
+          <span id="col-done-count" class="ml-auto text-xs text-slate-500 badge"></span>
+        </div>
+        <div id="col-done" class="p-3 space-y-2 flex-1 overflow-y-auto scrollbar"></div>
+      </div>
+    </div>
+
+    <!-- Selected conversation timeline -->
+    <div id="timeline-panel" class="mt-4 bg-white rounded-lg shadow-sm border border-slate-200 hidden">
+      <div class="px-4 py-3 border-b border-slate-200 flex items-center gap-3">
+        <h2 id="timeline-title" class="text-sm font-semibold flex-1"></h2>
+        <span id="timeline-status" class="text-xs px-2 py-0.5 rounded font-medium"></span>
+        <span id="timeline-rounds" class="text-xs text-slate-500 badge"></span>
+        <button id="timeline-cancel-btn" class="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-2 py-1 rounded hidden">Cancel</button>
+        <button id="timeline-close-btn" class="text-xs text-slate-400 hover:text-slate-700">✕</button>
+      </div>
+      <div id="timeline-body" class="p-4 space-y-2 max-h-[520px] overflow-y-auto scrollbar font-mono text-xs"></div>
+    </div>
+  </section>
+
+  <!-- ── Volumes tab ─────────────────────────────────────────────────── -->
+  <section id="tab-volumes" class="tab-panel hidden">
+    <div class="grid grid-cols-12 gap-4">
+      <div class="col-span-4 bg-white rounded-lg shadow-sm border border-slate-200 flex flex-col min-h-[480px]">
+        <div class="px-3 py-2 border-b border-slate-200 font-semibold text-sm">Volumes</div>
+        <div id="volume-list" class="p-2 space-y-1 overflow-y-auto scrollbar"></div>
+      </div>
+      <div class="col-span-8 bg-white rounded-lg shadow-sm border border-slate-200 flex flex-col min-h-[480px]">
+        <div class="px-3 py-2 border-b border-slate-200 font-semibold text-sm flex items-center gap-2">
+          <span id="vol-file-name" class="font-mono text-xs text-slate-700">select a file</span>
+          <span id="vol-file-size" class="text-xs text-slate-400 ml-auto"></span>
+        </div>
+        <pre id="vol-file-body" class="p-3 overflow-auto scrollbar text-xs font-mono whitespace-pre-wrap break-words flex-1"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Team tab ────────────────────────────────────────────────────── -->
+  <section id="tab-team" class="tab-panel hidden">
+    <div class="bg-white rounded-lg shadow-sm border border-slate-200">
+      <table class="w-full text-sm">
+        <thead class="bg-slate-50 border-b border-slate-200">
+          <tr>
+            <th class="text-left px-3 py-2 font-semibold">Agent</th>
+            <th class="text-left px-3 py-2 font-semibold">Rank</th>
+            <th class="text-left px-3 py-2 font-semibold">Model</th>
+            <th class="text-left px-3 py-2 font-semibold">Volumes</th>
+            <th class="text-left px-3 py-2 font-semibold">Quota</th>
+          </tr>
+        </thead>
+        <tbody id="team-body"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<!-- ── New conversation modal ────────────────────────────────────────── -->
+<div id="new-conv-modal" class="fixed inset-0 bg-black/40 hidden items-center justify-center z-30">
+  <div class="bg-white rounded-lg shadow-xl p-5 w-[420px]">
+    <h3 class="font-semibold mb-3">New conversation</h3>
+    <div class="space-y-3">
+      <label class="block">
+        <span class="text-xs font-medium text-slate-700">Tag (optional)</span>
+        <input id="nc-tag" class="mt-0.5 w-full border border-slate-300 rounded px-2 py-1 text-sm" placeholder="e.g. design-section">
+      </label>
+      <label class="block">
+        <span class="text-xs font-medium text-slate-700">Target agent</span>
+        <select id="nc-target" class="mt-0.5 w-full border border-slate-300 rounded px-2 py-1 text-sm bg-white"></select>
+      </label>
+      <label class="block">
+        <span class="text-xs font-medium text-slate-700">Initial input (JSON)</span>
+        <textarea id="nc-input" rows="4" class="mt-0.5 w-full border border-slate-300 rounded px-2 py-1 text-sm font-mono">{"section":"design"}</textarea>
+      </label>
+      <label class="block">
+        <span class="text-xs font-medium text-slate-700">Max rounds</span>
+        <input id="nc-rounds" type="number" min="1" value="8" class="mt-0.5 w-full border border-slate-300 rounded px-2 py-1 text-sm">
+      </label>
+      <label class="flex items-center gap-2">
+        <input type="checkbox" id="nc-autostart" checked>
+        <span class="text-xs">Start immediately</span>
+      </label>
+    </div>
+    <div class="mt-4 flex justify-end gap-2">
+      <button id="nc-cancel" class="px-3 py-1.5 text-sm border border-slate-300 rounded">Cancel</button>
+      <button id="nc-submit" class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded font-medium">Create</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────
+const state = {
+  rooms: [],
+  currentRoomID: null,
+  currentRoom: null,        // detail
+  conversations: [],        // summaries
+  selectedConvID: null,
+  selectedConv: null,       // full record
+  volumes: [],              // [{name,...}]
+  selectedVolume: null,
+  sse: null,
+  agentColors: {},
+};
+
+// Stable per-agent color palette (10 distinct hues, hashed by name).
+const palette = ['#2563eb','#dc2626','#059669','#d97706','#9333ea','#0891b2','#be185d','#65a30d','#475569','#7c3aed'];
+function colorFor(name) {
+  if (!name) return '#94a3b8';
+  if (state.agentColors[name]) return state.agentColors[name];
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
+  return state.agentColors[name] = palette[Math.abs(h) % palette.length];
+}
+
+// ── HTTP helpers ───────────────────────────────────────────────────
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(`${r.status}: ${text}`);
+  }
+  const ct = r.headers.get('content-type') || '';
+  if (ct.includes('application/json')) return r.json();
+  return r.text();
+}
+
+function setStatus(msg, isErr) {
+  const el = document.getElementById('conn-status');
+  el.textContent = msg || '';
+  el.className = 'text-xs ml-auto ' + (isErr ? 'text-red-600' : 'text-slate-500');
+}
+
+// ── Initial load ───────────────────────────────────────────────────
+async function bootstrap() {
+  try {
+    state.rooms = await api('/api/rooms');
+    state.volumes = await api('/api/volumes');
+    renderRoomSelect();
+    if (state.rooms.length > 0) {
+      await selectRoom(state.rooms[0].room_id);
+    } else {
+      setStatus('no rooms hired — run `hive hire -f ...` first', true);
+    }
+    renderVolumeList();
+  } catch (e) {
+    setStatus('connect failed: ' + e.message, true);
+  }
+}
+
+function renderRoomSelect() {
+  const sel = document.getElementById('room-select');
+  sel.innerHTML = '';
+  if (state.rooms.length === 0) {
+    sel.innerHTML = '<option>(no rooms)</option>';
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  for (const r of state.rooms) {
+    const opt = document.createElement('option');
+    opt.value = r.room_id;
+    const counts = r.conv_counts || {};
+    const total = Object.values(counts).reduce((a,b)=>a+b, 0);
+    opt.textContent = `${r.name}  (${total} convs)`;
+    sel.appendChild(opt);
+  }
+}
+
+document.getElementById('room-select').addEventListener('change', e => selectRoom(e.target.value));
+
+async function selectRoom(roomID) {
+  state.currentRoomID = roomID;
+  document.getElementById('room-select').value = roomID;
+
+  state.currentRoom = await api('/api/rooms/' + roomID);
+  document.getElementById('conv-room-tag').textContent = state.currentRoom.name;
+
+  await reloadConversations();
+  renderTeam();
+  subscribeSSE(roomID);
+}
+
+async function reloadConversations() {
+  if (!state.currentRoomID) return;
+  state.conversations = await api(`/api/rooms/${state.currentRoomID}/conversations`);
+  renderKanban();
+}
+
+// ── Kanban render ─────────────────────────────────────────────────
+function renderKanban() {
+  const cols = { plan: [], active: [], done: [] };
+  for (const c of state.conversations) {
+    if (c.status === 'planned') cols.plan.push(c);
+    else if (c.status === 'active') cols.active.push(c);
+    else cols.done.push(c); // done | failed | cancelled | interrupted
+  }
+  paintColumn('col-plan', cols.plan);
+  paintColumn('col-active', cols.active);
+  paintColumn('col-done', cols.done);
+  document.getElementById('col-plan-count').textContent = cols.plan.length;
+  document.getElementById('col-active-count').textContent = cols.active.length;
+  document.getElementById('col-done-count').textContent = cols.done.length;
+
+  const counts = { plan: cols.plan.length, active: cols.active.length, done: cols.done.length };
+  document.getElementById('conv-counts').textContent =
+    `${counts.plan} planned · ${counts.active} in progress · ${counts.done} done`;
+}
+
+function paintColumn(elID, items) {
+  const el = document.getElementById(elID);
+  el.innerHTML = '';
+  if (items.length === 0) {
+    el.innerHTML = `<div class="text-xs text-slate-400 italic px-1 py-2">empty</div>`;
+    return;
+  }
+  for (const c of items) {
+    el.appendChild(convCard(c));
+  }
+}
+
+function convCard(c) {
+  const card = document.createElement('div');
+  const isActive = c.status === 'active';
+  const statusColor = ({
+    planned: 'bg-slate-100 text-slate-700',
+    active: 'bg-blue-100 text-blue-700',
+    done: 'bg-emerald-100 text-emerald-700',
+    failed: 'bg-red-100 text-red-700',
+    cancelled: 'bg-orange-100 text-orange-700',
+    interrupted: 'bg-amber-100 text-amber-700',
+  })[c.status] || 'bg-slate-100 text-slate-700';
+
+  card.className = 'conv-card cursor-pointer border border-slate-200 hover:border-blue-400 rounded-md px-3 py-2 bg-white';
+  card.onclick = () => selectConversation(c.id);
+  const created = c.created_at ? new Date(c.created_at).toLocaleTimeString() : '';
+  const tag = c.tag || c.id.slice(0, 16);
+  card.innerHTML = `
+    <div class="flex items-start gap-2">
+      <span class="text-[10px] font-mono px-1.5 py-0.5 rounded ${statusColor} badge">${c.status}</span>
+      <span class="font-medium text-sm flex-1 truncate" title="${escapeHtml(tag)}">${escapeHtml(tag)}</span>
+    </div>
+    <div class="mt-1 text-xs text-slate-500 flex items-center gap-2 badge">
+      <span>→ <b style="color:${colorFor(c.initial_target)}">${escapeHtml(c.initial_target)}</b></span>
+      <span class="ml-auto">${c.round_count}/${c.max_rounds} rds</span>
+    </div>
+    ${isActive ? '<div class="mt-1.5"><span class="typing"></span><span class="typing"></span><span class="typing"></span></div>' : ''}
+    <div class="text-[10px] text-slate-400 mt-1 badge">${created}</div>
+  `;
+  if (state.selectedConvID === c.id) {
+    card.classList.add('ring-2','ring-blue-400');
+  }
+  return card;
+}
+
+// ── Timeline ──────────────────────────────────────────────────────
+async function selectConversation(convID) {
+  state.selectedConvID = convID;
+  state.selectedConv = await api(`/api/rooms/${state.currentRoomID}/conversations/${convID}`);
+  renderKanban(); // re-render so the highlight updates
+  renderTimeline();
+}
+
+function renderTimeline() {
+  const c = state.selectedConv;
+  if (!c) return;
+  document.getElementById('timeline-panel').classList.remove('hidden');
+  document.getElementById('timeline-title').textContent = c.tag || c.id;
+  document.getElementById('timeline-rounds').textContent = `${c.round_count}/${c.max_rounds} rounds`;
+
+  const sEl = document.getElementById('timeline-status');
+  sEl.textContent = c.status;
+  sEl.className = 'text-xs px-2 py-0.5 rounded font-medium ' + ({
+    planned: 'bg-slate-100 text-slate-700',
+    active: 'bg-blue-100 text-blue-700',
+    done: 'bg-emerald-100 text-emerald-700',
+    failed: 'bg-red-100 text-red-700',
+    cancelled: 'bg-orange-100 text-orange-700',
+    interrupted: 'bg-amber-100 text-amber-700',
+  })[c.status] || 'bg-slate-100 text-slate-700';
+
+  const cancelBtn = document.getElementById('timeline-cancel-btn');
+  if (c.status === 'planned' || c.status === 'active') {
+    cancelBtn.classList.remove('hidden');
+    cancelBtn.onclick = async () => {
+      if (!confirm('Cancel this conversation?')) return;
+      await api(`/api/rooms/${state.currentRoomID}/conversations/${c.id}/cancel`, {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({reason: 'user_cancel'}),
+      });
+      // Bus event will trigger reload.
+    };
+  } else {
+    cancelBtn.classList.add('hidden');
+  }
+
+  const body = document.getElementById('timeline-body');
+  body.innerHTML = '';
+  for (const m of (c.messages || [])) {
+    body.appendChild(timelineEntry(m));
+  }
+  if ((c.messages || []).length === 0) {
+    body.innerHTML = '<div class="text-slate-400 italic">no messages yet — waiting for first dispatch</div>';
+  }
+  // Footer: error / final answer
+  if (c.error) {
+    const errEl = document.createElement('div');
+    errEl.className = 'border-t border-slate-200 mt-2 pt-2 text-red-700';
+    errEl.textContent = '⚠ ' + c.error;
+    body.appendChild(errEl);
+  }
+  // Add a planned-state CTA so the user can actually start it.
+  if (c.status === 'planned') {
+    const cta = document.createElement('div');
+    cta.className = 'border-t border-slate-200 mt-2 pt-2';
+    cta.innerHTML = `<button id="start-this-btn" class="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1 rounded font-medium">▶ Start now</button>`;
+    body.appendChild(cta);
+    document.getElementById('start-this-btn').onclick = async () => {
+      await api(`/api/rooms/${state.currentRoomID}/conversations/${c.id}/start`, {method:'POST'});
+    };
+  }
+  // Auto-scroll to bottom on update.
+  body.scrollTop = body.scrollHeight;
+}
+
+function timelineEntry(m) {
+  const el = document.createElement('div');
+  const fromColor = colorFor(m.from);
+  const ts = m.ts ? new Date(m.ts).toLocaleTimeString() : '';
+  const fromTxt = m.from || '(creator)';
+  const toTxt = m.to ? ' → ' + m.to : '';
+  const kindBadge = ({
+    task_input:  'bg-slate-100 text-slate-700',
+    peer:        'bg-blue-50 text-blue-700',
+    task_output: 'bg-emerald-50 text-emerald-700',
+    error:       'bg-red-50 text-red-700',
+    log:         'bg-slate-50 text-slate-500',
+    round_cap:   'bg-orange-50 text-orange-700',
+  })[m.kind] || 'bg-slate-50 text-slate-700';
+
+  let payloadStr = '';
+  if (m.payload != null) {
+    try {
+      const obj = (typeof m.payload === 'string') ? JSON.parse(m.payload) : m.payload;
+      payloadStr = JSON.stringify(obj, null, 2);
+    } catch {
+      payloadStr = String(m.payload);
+    }
+  }
+
+  el.className = 'flex gap-3 items-start py-1';
+  el.innerHTML = `
+    <div class="text-slate-400 w-20 shrink-0 badge">${ts}</div>
+    <div class="text-slate-400 w-6 shrink-0 text-right badge">r${m.round}</div>
+    <div class="flex-1 min-w-0">
+      <div class="flex items-center gap-2 text-[11px]">
+        <span class="font-bold" style="color:${fromColor}">${escapeHtml(fromTxt)}</span>
+        ${m.to ? `<span class="text-slate-400">${escapeHtml(toTxt)}</span>` : ''}
+        <span class="px-1.5 py-0.5 rounded text-[10px] ${kindBadge}">${m.kind}</span>
+      </div>
+      ${payloadStr ? `<pre class="payload mt-0.5 text-[11px] text-slate-700 bg-slate-50/60 rounded p-1.5 border border-slate-100">${escapeHtml(payloadStr)}</pre>` : ''}
+    </div>
+  `;
+  return el;
+}
+
+document.getElementById('timeline-close-btn').onclick = () => {
+  document.getElementById('timeline-panel').classList.add('hidden');
+  state.selectedConvID = null;
+  state.selectedConv = null;
+  renderKanban();
+};
+
+// ── New conversation modal ────────────────────────────────────────
+document.getElementById('new-conv-btn').onclick = () => {
+  if (!state.currentRoom) return;
+  // Populate target agent dropdown.
+  const sel = document.getElementById('nc-target');
+  sel.innerHTML = '';
+  for (const m of (state.currentRoom.members || [])) {
+    const opt = document.createElement('option');
+    opt.value = m.image;
+    opt.textContent = `${m.image}  [${m.rank}]`;
+    sel.appendChild(opt);
+  }
+  document.getElementById('new-conv-modal').classList.remove('hidden');
+  document.getElementById('new-conv-modal').classList.add('flex');
+};
+document.getElementById('nc-cancel').onclick = closeModal;
+function closeModal() {
+  const m = document.getElementById('new-conv-modal');
+  m.classList.add('hidden');
+  m.classList.remove('flex');
+}
+document.getElementById('nc-submit').onclick = async () => {
+  const tag = document.getElementById('nc-tag').value.trim();
+  const target = document.getElementById('nc-target').value;
+  const inputRaw = document.getElementById('nc-input').value.trim();
+  const rounds = parseInt(document.getElementById('nc-rounds').value, 10) || 8;
+  const autostart = document.getElementById('nc-autostart').checked;
+  let inputObj = null;
+  if (inputRaw) {
+    try { inputObj = JSON.parse(inputRaw); }
+    catch (e) { alert('Input is not valid JSON: ' + e.message); return; }
+  }
+  try {
+    const res = await api(`/api/rooms/${state.currentRoomID}/conversations`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({tag, target, input: inputObj, max_rounds: rounds}),
+    });
+    closeModal();
+    if (autostart) {
+      await api(`/api/rooms/${state.currentRoomID}/conversations/${res.conv_id}/start`, {method:'POST'});
+    }
+    await reloadConversations();
+    selectConversation(res.conv_id);
+  } catch (e) {
+    alert('Create failed: ' + e.message);
+  }
+};
+
+// ── SSE ─────────────────────────────────────────────────────────────
+function subscribeSSE(roomID) {
+  if (state.sse) state.sse.close();
+  const sse = new EventSource(`/api/rooms/${roomID}/events`);
+  state.sse = sse;
+  setStatus('connecting…');
+  sse.addEventListener('hello', e => setStatus('live'));
+  sse.addEventListener('conversation.created', onConvEvent);
+  sse.addEventListener('conversation.started', onConvEvent);
+  sse.addEventListener('conversation.message', onConvEvent);
+  sse.addEventListener('conversation.status', onConvEvent);
+  sse.addEventListener('conversation.finished', onConvEvent);
+  sse.onerror = () => setStatus('disconnected — reconnecting', true);
+}
+
+async function onConvEvent(e) {
+  // Lightweight refresh: re-fetch the conversation list, plus the
+  // selected conversation if it's the one that changed.
+  try {
+    const ev = JSON.parse(e.data);
+    await reloadConversations();
+    if (state.selectedConvID && ev.conv_id === state.selectedConvID) {
+      state.selectedConv = await api(`/api/rooms/${state.currentRoomID}/conversations/${state.selectedConvID}`);
+      renderTimeline();
+    }
+    setStatus('live · ' + ev.type.replace('conversation.', ''));
+  } catch {}
+}
+
+// ── Volumes tab ───────────────────────────────────────────────────
+function renderVolumeList() {
+  const el = document.getElementById('volume-list');
+  el.innerHTML = '';
+  if (state.volumes.length === 0) {
+    el.innerHTML = '<div class="text-xs text-slate-400 italic px-1 py-2">no volumes</div>';
+    return;
+  }
+  for (const v of state.volumes) {
+    const row = document.createElement('div');
+    row.className = 'cursor-pointer hover:bg-slate-50 rounded px-2 py-1 text-sm';
+    row.textContent = v.name;
+    row.onclick = () => selectVolume(v.name);
+    el.appendChild(row);
+  }
+}
+
+async function selectVolume(name) {
+  state.selectedVolume = name;
+  // Replace volume-list with the tree of this volume but keep a back nav.
+  const el = document.getElementById('volume-list');
+  el.innerHTML = '<div class="cursor-pointer text-xs text-blue-600 px-1 py-1" id="vol-back">← back to volumes</div>';
+  document.getElementById('vol-back').onclick = renderVolumeList;
+  try {
+    const tree = await api(`/api/volumes/${name}/tree`);
+    el.appendChild(renderTree(tree, ''));
+  } catch (e) {
+    el.innerHTML += `<div class="text-xs text-red-600 px-2 py-1">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderTree(entries, indent) {
+  const wrap = document.createElement('div');
+  for (const e of (entries || [])) {
+    const row = document.createElement('div');
+    row.className = 'pl-' + (indent.length * 2);
+    row.style.paddingLeft = (indent.length * 12) + 'px';
+    if (e.is_dir) {
+      const head = document.createElement('div');
+      head.className = 'text-xs px-1 py-0.5 text-slate-600';
+      head.textContent = '📁 ' + e.name;
+      row.appendChild(head);
+      row.appendChild(renderTree(e.children, indent + '·'));
+    } else {
+      row.className += ' cursor-pointer hover:bg-slate-50 rounded text-xs px-1 py-0.5';
+      row.innerHTML = `<span class="text-slate-700">📄 ${escapeHtml(e.name)}</span> <span class="text-slate-400 ml-1">(${formatBytes(e.size)})</span>`;
+      row.onclick = () => loadVolumeFile(e.path);
+    }
+    wrap.appendChild(row);
+  }
+  return wrap;
+}
+
+async function loadVolumeFile(path) {
+  try {
+    const r = await fetch(`/api/volumes/${state.selectedVolume}/file?p=` + encodeURIComponent(path));
+    const text = await r.text();
+    document.getElementById('vol-file-name').textContent = state.selectedVolume + '/' + path;
+    document.getElementById('vol-file-size').textContent = r.headers.get('X-File-Size') ? formatBytes(parseInt(r.headers.get('X-File-Size'), 10)) : '';
+    document.getElementById('vol-file-body').textContent = text;
+  } catch (e) {
+    document.getElementById('vol-file-body').textContent = 'load failed: ' + e.message;
+  }
+}
+
+// ── Team tab ──────────────────────────────────────────────────────
+function renderTeam() {
+  const tbody = document.getElementById('team-body');
+  tbody.innerHTML = '';
+  if (!state.currentRoom) return;
+  for (const m of (state.currentRoom.members || [])) {
+    const tr = document.createElement('tr');
+    tr.className = 'border-b border-slate-100';
+    const vols = (m.volumes || []).map(v => `${v.name}(${v.mode})`).join(', ');
+    let quotaStr = '';
+    if (m.quota) {
+      const parts = [];
+      for (const k in m.quota) {
+        if (typeof m.quota[k] === 'object') {
+          for (const k2 in m.quota[k]) parts.push(`${k2}: ${m.quota[k][k2]}`);
+        } else {
+          parts.push(`${k}: ${m.quota[k]}`);
+        }
+      }
+      quotaStr = parts.join(' · ');
+    }
+    tr.innerHTML = `
+      <td class="px-3 py-2"><b style="color:${colorFor(m.image)}">${escapeHtml(m.image)}</b></td>
+      <td class="px-3 py-2 text-xs">${escapeHtml(m.rank)}</td>
+      <td class="px-3 py-2 text-xs font-mono">${escapeHtml(m.model || '(default)')}</td>
+      <td class="px-3 py-2 text-xs">${escapeHtml(vols)}</td>
+      <td class="px-3 py-2 text-xs text-slate-500">${escapeHtml(quotaStr)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+// ── Tab switching ─────────────────────────────────────────────────
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.onclick = () => {
+    const t = btn.dataset.tab;
+    document.querySelectorAll('.tab-btn').forEach(b => {
+      const sel = b.dataset.tab === t;
+      b.className = 'tab-btn px-3 py-2 text-sm font-medium border-b-2 ' +
+        (sel ? 'border-blue-500 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-800');
+    });
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
+    document.getElementById('tab-' + t).classList.remove('hidden');
+  };
+});
+
+// ── tiny helpers ─────────────────────────────────────────────────
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')
+    .replaceAll('"','&quot;').replaceAll("'",'&#39;');
+}
+function formatBytes(n) {
+  if (n == null) return '';
+  if (n < 1024) return n + ' B';
+  if (n < 1024*1024) return (n/1024).toFixed(1) + ' KB';
+  return (n/1024/1024).toFixed(2) + ' MB';
+}
+
+// ── Boot ──────────────────────────────────────────────────────────
+bootstrap();
+// Periodic room-list refresh to pick up newly-hired rooms (low-cost
+// since the page is tiny).
+setInterval(async () => {
+  try {
+    state.rooms = await api('/api/rooms');
+    renderRoomSelect();
+  } catch {}
+}, 5000);
+
+</script>
+</body>
+</html>

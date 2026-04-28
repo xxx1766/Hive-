@@ -129,7 +129,11 @@ func DispatchTool(ctx context.Context, a *hive.Agent, name string, args map[stri
 		if to == "" {
 			return nil, fmt.Errorf("peer_send: to is required")
 		}
-		if err := a.PeerSend(ctx, to, args["payload"]); err != nil {
+		var opts []hive.SendOpt
+		if convID := getString(args, "conv_id"); convID != "" {
+			opts = append(opts, hive.WithConv(convID))
+		}
+		if err := a.PeerSend(ctx, to, args["payload"], opts...); err != nil {
 			return nil, err
 		}
 		return "sent", nil

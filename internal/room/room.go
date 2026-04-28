@@ -121,6 +121,16 @@ type Hooks struct {
 	// AuthPeerSend is installed on the Router; returns non-nil *protocol.Error
 	// to reject a peer/send.
 	AuthPeerSend func(r *Room, from, to string) error
+	// PeerSendIntercept (when non-nil) is called BEFORE the router routes a
+	// peer/send. Use it for Conversation round-cap enforcement: if the
+	// hook returns non-nil, the peer/send fails with that error and the
+	// message is never delivered. Pure precondition check; no side effects.
+	PeerSendIntercept func(r *Room, from, to, convID string, payload json.RawMessage) error
+	// PeerSendDelivered (when non-nil) is called AFTER the router has
+	// successfully delivered a peer/recv to the target. Daemon uses it
+	// to append the message to the Conversation transcript and publish
+	// to the SSE bus. Fire-and-forget — return value ignored.
+	PeerSendDelivered func(r *Room, from, to, convID string, payload json.RawMessage)
 	// OnAgentExit fires after an Agent's process has been reaped and the
 	// router has unregistered it. The daemon uses this to drop any
 	// long-lived state keyed off the Conn — most notably event-bus
@@ -326,8 +336,10 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 }
 
 // Run dispatches a task to one Agent in the Room and waits for it to
-// report task/done or task/error.
-func (r *Room) Run(ctx context.Context, targetImage string, task json.RawMessage) (json.RawMessage, error) {
+// report task/done or task/error. Pass convID="" for ad-hoc runs;
+// non-empty convID flags the dispatch as the entry-point of a
+// Conversation so the runner can echo it back on outbound peer/send.
+func (r *Room) Run(ctx context.Context, targetImage string, task json.RawMessage, convID string) (json.RawMessage, error) {
 	m := r.Member(targetImage)
 	if m == nil {
 		return nil, fmt.Errorf("agent %s not found in room %s", targetImage, r.ID)
@@ -362,6 +374,7 @@ func (r *Room) Run(ctx context.Context, targetImage string, task json.RawMessage
 	_, err := m.Conn.Call(ctx, rpc.MethodTaskRun, rpc.TaskRunParams{
 		TaskID: taskID,
 		Input:  task,
+		ConvID: convID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dispatch task/run: %w", err)
@@ -433,8 +446,19 @@ func (r *Room) installCoreHandlers(m *Member) {
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, err
 		}
-		if err := r.router.Send(ctx, m.Image.Name, p.To, p.Payload); err != nil {
+		// Conversation hooks: round-cap precheck, then post-success append.
+		// Both are no-ops when the daemon hasn't installed them or when
+		// p.ConvID == "" (peer messages outside any Conversation).
+		if r.Hooks.PeerSendIntercept != nil {
+			if err := r.Hooks.PeerSendIntercept(r, m.Image.Name, p.To, p.ConvID, p.Payload); err != nil {
+				return nil, err
+			}
+		}
+		if err := r.router.Send(ctx, m.Image.Name, p.To, p.ConvID, p.Payload); err != nil {
 			return nil, err
+		}
+		if r.Hooks.PeerSendDelivered != nil {
+			r.Hooks.PeerSendDelivered(r, m.Image.Name, p.To, p.ConvID, p.Payload)
 		}
 		return struct{}{}, nil
 	})

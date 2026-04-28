@@ -29,10 +29,14 @@ import (
 	"sync/atomic"
 )
 
-// Task is a work unit delivered by Hive.
+// Task is a work unit delivered by Hive. ConvID is non-empty when the
+// task was dispatched as the entry-point of a Conversation; the runner
+// should propagate it on outbound PeerSend(... WithConv(t.ConvID)) so
+// inter-Agent hops register on the right transcript.
 type Task struct {
-	ID    string
-	Input json.RawMessage
+	ID     string
+	Input  json.RawMessage
+	ConvID string
 
 	agent *Agent
 }
@@ -62,6 +66,26 @@ func (t *Task) Fail(code int, msg string) error {
 type PeerMessage struct {
 	From    string
 	Payload json.RawMessage
+	// ConvID, when non-empty, marks this message as a hop in a Conversation.
+	// Reply via PeerSend with WithConv(ConvID) so the round counter advances
+	// on the right transcript and the message lands in the persisted log.
+	ConvID string
+}
+
+// SendOpt customises an outbound peer/send. Today only WithConv exists;
+// keeping this as a variadic functional-options pattern means future
+// flags (priority, deadline, etc.) won't break callers.
+type SendOpt func(*sendOpts)
+
+type sendOpts struct {
+	convID string
+}
+
+// WithConv tags an outbound peer/send as a Conversation hop. The daemon
+// will increment the round counter on the matching transcript and reject
+// the call if the cap was already hit. Empty convID is a no-op.
+func WithConv(convID string) SendOpt {
+	return func(o *sendOpts) { o.convID = convID }
 }
 
 // Event is an inbound pub/sub event delivered via events/recv. FromRoom
@@ -284,9 +308,19 @@ func (a *Agent) FSList(ctx context.Context, path string) ([]FSEntry, error) {
 	return res.Entries, nil
 }
 
-// PeerSend delivers a message to another Agent in the same Room.
-func (a *Agent) PeerSend(ctx context.Context, to string, payload any) error {
-	return a.call(ctx, "peer/send", map[string]any{"to": to, "payload": payload}, nil)
+// PeerSend delivers a message to another Agent in the same Room. Pass
+// WithConv(convID) to make this hop count toward a Conversation; without
+// it the message is ad-hoc (no transcript, no round budget).
+func (a *Agent) PeerSend(ctx context.Context, to string, payload any, opts ...SendOpt) error {
+	o := &sendOpts{}
+	for _, fn := range opts {
+		fn(o)
+	}
+	args := map[string]any{"to": to, "payload": payload}
+	if o.convID != "" {
+		args["conv_id"] = o.convID
+	}
+	return a.call(ctx, "peer/send", args, nil)
 }
 
 // ── Memory API (persistent KV, Room-private or Volume-shared) ────────────
@@ -447,10 +481,11 @@ func (a *Agent) readLoop() {
 			var p struct {
 				TaskID string          `json:"task_id"`
 				Input  json.RawMessage `json:"input,omitempty"`
+				ConvID string          `json:"conv_id,omitempty"`
 			}
 			_ = json.Unmarshal(m.Params, &p)
 			select {
-			case a.tasks <- &Task{ID: p.TaskID, Input: p.Input, agent: a}:
+			case a.tasks <- &Task{ID: p.TaskID, Input: p.Input, ConvID: p.ConvID, agent: a}:
 			case <-a.closed:
 				return
 			}
@@ -459,10 +494,11 @@ func (a *Agent) readLoop() {
 			var p struct {
 				From    string          `json:"from"`
 				Payload json.RawMessage `json:"payload"`
+				ConvID  string          `json:"conv_id"`
 			}
 			_ = json.Unmarshal(m.Params, &p)
 			select {
-			case a.peers <- &PeerMessage{From: p.From, Payload: p.Payload}:
+			case a.peers <- &PeerMessage{From: p.From, Payload: p.Payload, ConvID: p.ConvID}:
 			case <-a.closed:
 				return
 			}

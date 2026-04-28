@@ -34,7 +34,7 @@ func TestRouterAuthRejects(t *testing.T) {
 
 	// No agents registered — we still exercise the auth gate, which runs
 	// before target lookup.
-	err := r.Send(ctx, "A", "B", json.RawMessage(`{}`))
+	err := r.Send(ctx, "A", "B", "", json.RawMessage(`{}`))
 	if err == nil {
 		t.Fatal("expected auth error")
 	}
@@ -50,7 +50,7 @@ func TestRouterTargetMissing(t *testing.T) {
 	r := New("room-x", nil, 0)
 	go r.Run(ctx)
 
-	err := r.Send(ctx, "A", "B", json.RawMessage(`{}`))
+	err := r.Send(ctx, "A", "B", "", json.RawMessage(`{}`))
 	if err == nil {
 		t.Fatal("expected peer-not-found")
 	}
@@ -70,7 +70,7 @@ func TestRouterStops(t *testing.T) {
 	// After Run exits, Send must fail promptly rather than block forever.
 	done := make(chan struct{})
 	go func() {
-		_ = r.Send(context.Background(), "A", "B", json.RawMessage(`{}`))
+		_ = r.Send(context.Background(), "A", "B", "", json.RawMessage(`{}`))
 		close(done)
 	}()
 	select {

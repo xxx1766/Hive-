@@ -195,3 +195,98 @@ type RoomStatusNotification struct {
 	Info   map[string]any `json:"info,omitempty"`
 	Time   string         `json:"time"`
 }
+
+// ── Conversation lifecycle ────────────────────────────────────────────────
+//
+// A Conversation is a multi-round Agent collaboration with persisted
+// transcript and round-cap enforcement. The lifecycle is:
+//
+//	create → planned → start → active → done | failed | cancelled | interrupted
+//
+// Cancellation reasons (carried in Error): "round_cap" (max_rounds hit),
+// user-initiated, or runner-reported failure.
+
+// ConversationCreateParams plans a new Conversation but does not dispatch
+// it. The actual dispatch happens via ConversationStart, which lets a UI
+// queue several conversations before kicking them off.
+type ConversationCreateParams struct {
+	RoomID    string          `json:"room_id"`
+	Tag       string          `json:"tag,omitempty"`         // human-friendly UI label; auto if empty
+	Target    string          `json:"target"`                // initial Agent (image name) the conv targets
+	Input     json.RawMessage `json:"input,omitempty"`       // initial task payload
+	MaxRounds int             `json:"max_rounds,omitempty"`  // 0 ⇒ DefaultMaxRounds
+}
+
+type ConversationCreateResult struct {
+	ConvID string `json:"conv_id"`
+	Status string `json:"status"` // "planned"
+}
+
+type ConversationStartParams struct {
+	RoomID string `json:"room_id"`
+	ConvID string `json:"conv_id"`
+}
+
+type ConversationStartResult struct {
+	ConvID string `json:"conv_id"`
+	Status string `json:"status"` // "active"
+}
+
+type ConversationListParams struct {
+	RoomID string `json:"room_id"`
+}
+
+// ConversationSummary is the compact view used in list endpoints; the
+// full transcript is fetched separately via Get.
+type ConversationSummary struct {
+	ID            string `json:"id"`
+	RoomID        string `json:"room_id"`
+	Tag           string `json:"tag,omitempty"`
+	Status        string `json:"status"`
+	InitialTarget string `json:"initial_target"`
+	MaxRounds     int    `json:"max_rounds"`
+	RoundCount    int    `json:"round_count"`
+	MessageCount  int    `json:"message_count"`
+	CreatedAt     string `json:"created_at"`
+	StartedAt     string `json:"started_at,omitempty"`
+	FinishedAt    string `json:"finished_at,omitempty"`
+}
+
+type ConversationListResult struct {
+	RoomID        string                `json:"room_id"`
+	Conversations []ConversationSummary `json:"conversations"`
+}
+
+type ConversationGetParams struct {
+	RoomID string `json:"room_id"`
+	ConvID string `json:"conv_id"`
+}
+
+// ConversationGetResult is the full record (json-as-bytes — the daemon
+// hands the on-disk shape through unchanged so UI / CLI both deal with
+// the identical schema as conversation.Conversation).
+type ConversationGetResult struct {
+	Conversation json.RawMessage `json:"conversation"`
+}
+
+type ConversationCancelParams struct {
+	RoomID string `json:"room_id"`
+	ConvID string `json:"conv_id"`
+	Reason string `json:"reason,omitempty"`
+}
+
+type ConversationCancelResult struct {
+	ConvID string `json:"conv_id"`
+	Status string `json:"status"` // "cancelled"
+}
+
+// ConversationEventNotification is the payload of NotifyConversationEvt
+// pushed during `room/run` and on the new SSE `/api/rooms/{id}/events`
+// stream. Type names are stable strings (see internal/conversation/bus.go).
+type ConversationEventNotification struct {
+	Type    string          `json:"type"`
+	RoomID  string          `json:"room_id"`
+	ConvID  string          `json:"conv_id,omitempty"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+	Time    string          `json:"time"`
+}

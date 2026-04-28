@@ -20,6 +20,15 @@
 // mock LLM provider path still produces a legible demo output. The
 // runner itself is a normal Hive Agent — same sandbox, same Rank, same
 // quota accounting; isolation is not weakened.
+//
+// Two ingestion paths (since v0.2):
+//
+//	Tasks()  — the classic `hive run --target <agent>` dispatch path
+//	Peers()  — Conversation hops from another Agent in the same Room.
+//	           When a peer message carries a non-empty ConvID, the runner
+//	           treats the payload like a task input, runs the same ReAct
+//	           loop, and replies by PeerSend(from, ..., WithConv(convID))
+//	           so the round counter advances on the right transcript.
 package main
 
 import (
@@ -73,42 +82,93 @@ func main() {
 	ctx := context.Background()
 	system := buildSystemPrompt(skill, tools)
 
-	for task := range a.Tasks() {
-		runOne(ctx, a, task, system, model, tools)
+	for {
+		select {
+		case task, ok := <-a.Tasks():
+			if !ok {
+				return
+			}
+			runOne(ctx, a, task, system, model, tools)
+		case peer, ok := <-a.Peers():
+			if !ok {
+				return
+			}
+			runFromPeer(ctx, a, peer, system, model, tools)
+		case <-a.Done():
+			return
+		}
 	}
 }
 
+// runOne handles a top-level task/run dispatch. Final answer goes back
+// via task/done; failures via task/error.
 func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, system, model string, tools []string) {
-	a.Log("info", "skill task received", map[string]any{"task_id": task.ID})
+	a.Log("info", "skill task received", map[string]any{"task_id": task.ID, "conv_id": task.ConvID})
+	out, err := react(ctx, a, system, model, tools, string(task.Input), task.ConvID)
+	if err != nil {
+		_ = task.Fail(2, err.Error())
+		return
+	}
+	_ = task.Reply(out)
+}
+
+// runFromPeer treats an inbound peer/recv with a non-empty ConvID as a
+// follow-up task in a Conversation. Same ReAct loop, but the final
+// answer is shipped back to the sender as a peer/send hop (still
+// counted against the round budget). Peer messages without ConvID
+// (ad-hoc inter-Agent chat) are surfaced as a log and dropped, since
+// they have no transcript and no reply contract.
+func runFromPeer(ctx context.Context, a *hive.Agent, peer *hive.PeerMessage, system, model string, tools []string) {
+	if peer.ConvID == "" {
+		a.Log("info", "peer message dropped (no conv_id)", map[string]any{"from": peer.From})
+		return
+	}
+	a.Log("info", "skill peer received", map[string]any{"from": peer.From, "conv_id": peer.ConvID})
+
+	out, err := react(ctx, a, system, model, tools, string(peer.Payload), peer.ConvID)
+	if err != nil {
+		// Surface the failure as a peer reply so the originating Agent
+		// can choose to retry or give up. Wrapping in a struct keeps the
+		// schema introspectable.
+		_ = a.PeerSend(ctx, peer.From, map[string]any{"error": err.Error()}, hive.WithConv(peer.ConvID))
+		return
+	}
+	if err := a.PeerSend(ctx, peer.From, out, hive.WithConv(peer.ConvID)); err != nil {
+		a.Log("error", "peer reply failed", map[string]any{"err": err.Error(), "conv_id": peer.ConvID})
+	}
+}
+
+// react drives the ReAct loop. Returns the parsed answer (a map) on
+// success, or an error if the loop never converged. convID is threaded
+// through so any peer_send tool calls the LLM emits also count against
+// the right Conversation transcript.
+func react(ctx context.Context, a *hive.Agent, system, model string, tools []string, userInput, convID string) (map[string]any, error) {
 	msgs := []hive.LLMMessage{
 		{Role: "system", Content: system},
-		{Role: "user", Content: string(task.Input)},
+		{Role: "user", Content: userInput},
 	}
 
 	for iter := 1; iter <= maxSkillIterations; iter++ {
 		text, _, err := a.LLMComplete(ctx, "", model, msgs, 512)
 		if err != nil {
 			a.Log("error", "llm call failed", map[string]any{"iter": iter, "err": err.Error()})
-			_ = task.Fail(2, err.Error())
-			return
+			return nil, err
 		}
 		msgs = append(msgs, hive.LLMMessage{Role: "assistant", Content: text})
 
 		parsed := parseReply(text)
 
 		if parsed.Answer != "" {
-			_ = task.Reply(map[string]any{"answer": parsed.Answer, "iterations": iter})
-			return
+			return map[string]any{"answer": parsed.Answer, "iterations": iter}, nil
 		}
 		if parsed.Tool == "" {
 			// Fallback: non-JSON reply → surface verbatim as the answer.
 			// Keeps the mock provider path usable end-to-end.
-			_ = task.Reply(map[string]any{
+			return map[string]any{
 				"answer":     strings.TrimSpace(text),
 				"iterations": iter,
 				"format":     "plain",
-			})
-			return
+			}, nil
 		}
 
 		if !runners.ToolAllowed(parsed.Tool, tools) {
@@ -120,6 +180,18 @@ func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, system, model s
 				Content: fmt.Sprintf("tool %q is not in the allow-list %v", parsed.Tool, tools),
 			})
 			continue
+		}
+
+		// peer_send is special: when we're in a Conversation we want the
+		// hop attributed to its transcript so the round counter advances
+		// on the right conv. Inject conv_id into the args before dispatch.
+		if parsed.Tool == "peer_send" && convID != "" {
+			if parsed.Args == nil {
+				parsed.Args = map[string]any{}
+			}
+			if _, set := parsed.Args["conv_id"]; !set {
+				parsed.Args["conv_id"] = convID
+			}
 		}
 
 		result, terr := runners.DispatchTool(ctx, a, parsed.Tool, parsed.Args)
@@ -137,8 +209,7 @@ func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, system, model s
 			Content: fmt.Sprintf("tool %s returned: %s", parsed.Tool, runners.ResultText(result, toolResultCap)),
 		})
 	}
-
-	_ = task.Fail(3, fmt.Sprintf("skill did not converge within %d iterations", maxSkillIterations))
+	return nil, fmt.Errorf("skill did not converge within %d iterations", maxSkillIterations)
 }
 
 // ── LLM response parsing ─────────────────────────────────────────────────
@@ -191,7 +262,9 @@ func buildSystemPrompt(skill string, tools []string) string {
 		b.WriteString(`Tool: fs_list  — args {"path": string}; returns JSON array of entries` + "\n")
 	}
 	if containsAny(tools, []string{runners.GroupPeer}) {
-		b.WriteString(`Tool: peer_send — args {"to": string, "payload": any}; sends a message to another Agent in the same Room` + "\n")
+		b.WriteString(`Tool: peer_send — args {"to": string, "payload": any}; sends a message to another Agent in the same Room. ` +
+			`Inside a Conversation, the other Agent will reply with another peer message — you'll see it as a "tool peer_send returned" line. ` +
+			`Use peer_send to delegate a sub-step then await the reply, rather than trying to do everything yourself.` + "\n")
 	}
 	if containsAny(tools, []string{runners.GroupMemory}) {
 		b.WriteString(`Tool: memory_put  — args {"scope": string, "key": string, "value": string}; scope="" is Room-private, scope="<volume>" is cross-Room` + "\n")

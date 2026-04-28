@@ -47,6 +47,7 @@ type Router struct {
 type envelope struct {
 	from    string
 	to      string
+	convID  string // non-empty = part of a Conversation; propagated to peer/recv
 	payload json.RawMessage
 	reply   chan error
 }
@@ -86,11 +87,13 @@ func (r *Router) Unregister(imageName string) {
 
 // Send enqueues a message and blocks until the routing goroutine has
 // attempted delivery (returning auth or lookup errors synchronously is
-// what makes the Agent's peer/send RPC behave sanely).
-func (r *Router) Send(ctx context.Context, from, to string, payload json.RawMessage) error {
+// what makes the Agent's peer/send RPC behave sanely). convID is
+// propagated to peer/recv on the receiving side; pass "" for ad-hoc
+// peer messages outside any Conversation.
+func (r *Router) Send(ctx context.Context, from, to, convID string, payload json.RawMessage) error {
 	reply := make(chan error, 1)
 	select {
-	case r.routes <- envelope{from: from, to: to, payload: payload, reply: reply}:
+	case r.routes <- envelope{from: from, to: to, convID: convID, payload: payload, reply: reply}:
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-r.done:
@@ -140,6 +143,7 @@ func (r *Router) handle(ctx context.Context, env envelope) {
 	err := target.Notify(rpc.MethodPeerRecv, rpc.PeerRecvParams{
 		From:    env.from,
 		Payload: env.payload,
+		ConvID:  env.convID,
 	})
 	env.reply <- err
 }

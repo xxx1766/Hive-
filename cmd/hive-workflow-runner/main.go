@@ -56,8 +56,43 @@ func main() {
 	})
 
 	ctx := context.Background()
-	for task := range a.Tasks() {
-		runOne(ctx, a, task, mode, model, tools)
+	for {
+		select {
+		case task, ok := <-a.Tasks():
+			if !ok {
+				return
+			}
+			runOne(ctx, a, task, mode, model, tools)
+		case peer, ok := <-a.Peers():
+			if !ok {
+				return
+			}
+			runFromPeer(ctx, a, peer, mode, model, tools)
+		case <-a.Done():
+			return
+		}
+	}
+}
+
+// runFromPeer treats an inbound peer/recv with a non-empty ConvID as a
+// follow-up workflow execution. Same pipeline as runOne, but the result
+// is shipped back to the sender as a peer/send hop within the same
+// Conversation. Peer messages without ConvID are dropped (logged) since
+// workflows have no contract for ad-hoc inbound chat.
+func runFromPeer(ctx context.Context, a *hive.Agent, peer *hive.PeerMessage, mode *runMode, model string, tools []string) {
+	if peer.ConvID == "" {
+		a.Log("info", "peer message dropped (no conv_id)", map[string]any{"from": peer.From})
+		return
+	}
+	a.Log("info", "workflow peer received", map[string]any{"from": peer.From, "conv_id": peer.ConvID, "mode": mode.name})
+
+	out, err := executeWorkflow(ctx, a, mode, model, tools, peer.Payload, peer.ConvID)
+	if err != nil {
+		_ = a.PeerSend(ctx, peer.From, map[string]any{"error": err.Error()}, hive.WithConv(peer.ConvID))
+		return
+	}
+	if err := a.PeerSend(ctx, peer.From, out, hive.WithConv(peer.ConvID)); err != nil {
+		a.Log("error", "peer reply failed", map[string]any{"err": err.Error(), "conv_id": peer.ConvID})
 	}
 }
 
@@ -94,15 +129,42 @@ func detectMode() (*runMode, error) {
 // ── task execution ───────────────────────────────────────────────────────
 
 func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, mode *runMode, model string, tools []string) {
-	a.Log("info", "workflow task received", map[string]any{"task_id": task.ID, "mode": mode.name})
+	a.Log("info", "workflow task received", map[string]any{"task_id": task.ID, "mode": mode.name, "conv_id": task.ConvID})
+	out, err := executeWorkflow(ctx, a, mode, model, tools, task.Input, task.ConvID)
+	if err != nil {
+		// executeWorkflow returns a *runErr for staged failures so we can
+		// preserve the original exit code — keep the existing 2..6 mapping.
+		if re, ok := err.(*runErr); ok {
+			_ = task.Fail(re.code, re.msg)
+			return
+		}
+		_ = task.Fail(2, err.Error())
+		return
+	}
+	_ = task.Reply(out)
+}
 
+// runErr is a typed error so executeWorkflow can carry the legacy exit
+// codes (2: planner, 3: tool not allowed, 4: arg resolve, 5: tool, 6:
+// output) through to the task/error caller without losing semantics.
+type runErr struct {
+	code int
+	msg  string
+}
+
+func (e *runErr) Error() string { return e.msg }
+
+// executeWorkflow runs the configured mode against `input` and returns
+// the structured reply (`{output, mode, steps}`). convID, when non-empty,
+// is injected into peer_send args so cross-Agent hops emitted by the
+// workflow contribute to the right Conversation transcript.
+func executeWorkflow(ctx context.Context, a *hive.Agent, mode *runMode, model string, tools []string, input json.RawMessage, convID string) (map[string]any, error) {
 	wf := mode.static
 	if mode.name == "llm" {
-		planned, err := planWorkflow(ctx, a, mode.prompt, model, tools, task.Input)
+		planned, err := planWorkflow(ctx, a, mode.prompt, model, tools, input)
 		if err != nil {
 			a.Log("error", "planner failed", map[string]any{"err": err.Error()})
-			_ = task.Fail(2, err.Error())
-			return
+			return nil, &runErr{code: 2, msg: err.Error()}
 		}
 		wf = planned
 		a.Log("info", "planner produced workflow", map[string]any{"steps": len(wf.Steps)})
@@ -111,23 +173,21 @@ func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, mode *runMode, 
 	// Unmarshal task input into a generic value so `$input.<path>` works.
 	// Non-JSON inputs become a plain string — users then reference via
 	// `$input` as a whole, not `$input.something`.
-	var input any
-	if len(task.Input) > 0 {
-		if err := json.Unmarshal(task.Input, &input); err != nil {
-			input = string(task.Input)
+	var inputAny any
+	if len(input) > 0 {
+		if err := json.Unmarshal(input, &inputAny); err != nil {
+			inputAny = string(input)
 		}
 	}
 
-	wctx := workflow.NewContext(input)
+	wctx := workflow.NewContext(inputAny)
 	for i, step := range wf.Steps {
 		if !runners.ToolAllowed(step.Tool, tools) {
-			_ = task.Fail(3, fmt.Sprintf("step[%d] %s: tool %q not in allow-list %v", i, step.ID, step.Tool, tools))
-			return
+			return nil, &runErr{code: 3, msg: fmt.Sprintf("step[%d] %s: tool %q not in allow-list %v", i, step.ID, step.Tool, tools)}
 		}
 		resolvedRaw, err := workflow.Resolve(step.Args, wctx)
 		if err != nil {
-			_ = task.Fail(4, fmt.Sprintf("step[%d] %s: %v", i, step.ID, err))
-			return
+			return nil, &runErr{code: 4, msg: fmt.Sprintf("step[%d] %s: %v", i, step.ID, err)}
 		}
 		resolvedArgs, _ := resolvedRaw.(map[string]any)
 		if resolvedArgs == nil {
@@ -136,9 +196,8 @@ func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, mode *runMode, 
 		// LLM model fallback: when an llm_complete step doesn't pin a
 		// model in flow.json, use HIVE_MODEL (set by the daemon from the
 		// manifest's `model:` field, possibly overridden by `hive hire
-		// --model X`). Skill-runner already does this at line 58-61;
-		// mirroring it here lets workflow agents pick up `--model` too,
-		// without having to edit every flow.json.
+		// --model X`). Mirrors skill-runner's HIVE_MODEL fallback so
+		// workflow agents pick up `--model` too without editing flow.json.
 		if step.Tool == "llm_complete" {
 			if m, ok := resolvedArgs["model"]; !ok || m == nil || m == "" {
 				if envModel := os.Getenv("HIVE_MODEL"); envModel != "" {
@@ -146,25 +205,32 @@ func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, mode *runMode, 
 				}
 			}
 		}
+		// Conversation hop attribution: a workflow step that emits
+		// peer_send inside a Conversation should advance the right
+		// transcript. Inject conv_id only if not already pinned by the
+		// flow.json (explicit > implicit).
+		if step.Tool == "peer_send" && convID != "" {
+			if v, ok := resolvedArgs["conv_id"]; !ok || v == nil || v == "" {
+				resolvedArgs["conv_id"] = convID
+			}
+		}
 		a.Log("info", "step start", map[string]any{"i": i, "id": step.ID, "tool": step.Tool})
 		result, err := runners.DispatchTool(ctx, a, step.Tool, resolvedArgs)
 		if err != nil {
-			_ = task.Fail(5, fmt.Sprintf("step[%d] %s (%s): %v", i, step.ID, step.Tool, err))
-			return
+			return nil, &runErr{code: 5, msg: fmt.Sprintf("step[%d] %s (%s): %v", i, step.ID, step.Tool, err)}
 		}
 		wctx.Steps[step.ID] = result
 	}
 
 	out, err := wf.ResolveOutput(wctx)
 	if err != nil {
-		_ = task.Fail(6, fmt.Sprintf("resolve output: %v", err))
-		return
+		return nil, &runErr{code: 6, msg: fmt.Sprintf("resolve output: %v", err)}
 	}
-	_ = task.Reply(map[string]any{
+	return map[string]any{
 		"output": out,
 		"mode":   mode.name,
 		"steps":  wctx.Steps,
-	})
+	}, nil
 }
 
 // ── LLM planner (kind=workflow, planner: mode) ───────────────────────────

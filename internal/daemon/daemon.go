@@ -17,7 +17,9 @@ import (
 	"time"
 
 	"github.com/anne-x/hive/internal/agent"
+	"github.com/anne-x/hive/internal/conversation"
 	"github.com/anne-x/hive/internal/eventbus"
+	"github.com/anne-x/hive/internal/httpapi"
 	"github.com/anne-x/hive/internal/image"
 	"github.com/anne-x/hive/internal/ipc"
 	"github.com/anne-x/hive/internal/ns"
@@ -48,6 +50,13 @@ type Daemon struct {
 	events         *eventbus.Manager
 	llmProvider    llmproxy.Provider
 	aiToolProvider aitoolproxy.Provider
+
+	// Conversation primitives: persisted multi-round Agent transcripts
+	// + per-Room SSE bus for UI live updates.
+	convStore *conversation.Store
+	convBus   *conversation.Bus
+	// HTTP server for the embedded UI (non-fatal if it fails to bind).
+	httpAPI *httpapi.Server
 
 	quotaCtx    context.Context
 	quotaCancel context.CancelFunc
@@ -116,6 +125,8 @@ func New() (*Daemon, error) {
 		events:         evtMgr,
 		llmProvider:    prov,
 		aiToolProvider: aiProv,
+		convStore:      conversation.NewStore(ipc.RoomsDir()),
+		convBus:        conversation.NewBus(),
 		quotaCtx:       qCtx,
 		quotaCancel:    qCancel,
 		rooms:          make(map[string]*room.Room),
@@ -127,6 +138,20 @@ func New() (*Daemon, error) {
 	// Must run before Register exposes RPC handlers — otherwise an early
 	// agent/hire could race with the recovery writer for the same state.json.
 	d.recoverRooms()
+
+	// Conversation recovery: any conversation left in "active" was being
+	// driven by a now-dead daemon process — there's no runner alive that
+	// can converge it. Flip them to "interrupted" so the UI / CLI surfaces
+	// the discontinuity instead of silently re-displaying them as live.
+	if n, err := d.convStore.MarkActiveAsInterrupted(); err != nil {
+		log.Printf("conversation recovery: %v", err)
+	} else if n > 0 {
+		log.Printf("conversation recovery: marked %d active conversation(s) as interrupted", n)
+	}
+
+	// HTTP UI server. Non-fatal if it can't bind — the IPC channel keeps
+	// working. Address comes from HIVE_HTTP_ADDR (default 127.0.0.1:8910).
+	d.httpAPI = d.startHTTPAPI()
 	return d, nil
 }
 
@@ -145,6 +170,11 @@ func (d *Daemon) Register(srv *ipc.Server) {
 	srv.Handle(ipc.MethodRoomLogs, d.handleRoomLogs)
 	srv.Handle(ipc.MethodAgentHire, d.handleAgentHire)
 	srv.Handle(ipc.MethodRoomRun, d.handleRoomRun)
+	srv.Handle(ipc.MethodConversationCreate, d.handleConversationCreate)
+	srv.Handle(ipc.MethodConversationStart, d.handleConversationStart)
+	srv.Handle(ipc.MethodConversationList, d.handleConversationList)
+	srv.Handle(ipc.MethodConversationGet, d.handleConversationGet)
+	srv.Handle(ipc.MethodConversationCancel, d.handleConversationCancel)
 }
 
 // Shutdown stops every Room. Called when hived receives SIGTERM.
@@ -156,6 +186,12 @@ func (d *Daemon) Shutdown() {
 	d.shutMu.Lock()
 	d.shuttingDown = true
 	d.shutMu.Unlock()
+
+	// Stop accepting new HTTP requests first so in-flight UI calls
+	// don't try to talk to a half-torn-down state.
+	if d.httpAPI != nil {
+		d.httpAPI.Stop()
+	}
 
 	d.mu.Lock()
 	rms := make([]*room.Room, 0, len(d.rooms))
@@ -390,6 +426,59 @@ func (d *Daemon) createRoom(roomID, name string) (*room.Room, error) {
 			// Same-Room peer send is always allowed in demo. Rank-based
 			// peer policies can slot in here.
 			return nil
+		},
+		PeerSendIntercept: func(r *room.Room, from, to, convID string, payload json.RawMessage) error {
+			// No conv attached → ad-hoc peer message, skip Conversation
+			// bookkeeping entirely. Existing peer/send semantics preserved.
+			if convID == "" {
+				return nil
+			}
+			c, err := d.convStore.Load(r.ID, convID)
+			if err != nil {
+				return protocol.NewError(protocol.ErrCodeInvalidParams,
+					fmt.Sprintf("conversation %s not found in room %s", convID, r.ID))
+			}
+			if c.Status.Terminal() {
+				return protocol.NewError(protocol.ErrCodeInvalidParams,
+					fmt.Sprintf("conversation %s is %s; cannot accept new messages", convID, c.Status))
+			}
+			if c.RoundCount >= c.MaxRounds {
+				// Round cap hit. Cancel the conversation here so a single
+				// reject is durable — subsequent peer/sends will see status
+				// terminal and bounce on the check above. Caller-facing error
+				// surfaces as a permission_denied so the agent's reply path
+				// treats it like any other policy rejection.
+				_, _ = d.convStore.Update(r.ID, convID, func(cc *conversation.Conversation) {
+					cc.Status = conversation.StatusCancelled
+					cc.Error = "round_cap"
+					cc.FinishedAt = time.Now().UTC()
+				})
+				d.publishConvEvent(r.ID, convID, conversation.EventConvFinished, map[string]any{
+					"reason": "round_cap", "max_rounds": c.MaxRounds,
+				})
+				return protocol.NewError(protocol.ErrCodePermissionDenied,
+					fmt.Sprintf("conversation %s round cap (%d) exceeded", convID, c.MaxRounds))
+			}
+			return nil
+		},
+		PeerSendDelivered: func(r *room.Room, from, to, convID string, payload json.RawMessage) {
+			if convID == "" {
+				return
+			}
+			updated, err := d.convStore.Append(r.ID, convID, conversation.Message{
+				From:    from,
+				To:      to,
+				Kind:    conversation.KindPeer,
+				Payload: payload,
+			})
+			if err != nil {
+				log.Printf("conversation %s: append peer message failed: %v", convID, err)
+				return
+			}
+			// Surface the new message on the SSE bus and as a daemon-wide
+			// streaming notification so an active room/run subscriber also
+			// sees the hop without polling.
+			d.publishConvEvent(r.ID, convID, conversation.EventConvMessage, updated.Messages[len(updated.Messages)-1])
 		},
 		RegisterAgentHandlers: d.installAgentProxies,
 		OnAgentExit: func(_ string, conn *agent.Conn) {
@@ -803,7 +892,7 @@ func (d *Daemon) handleRoomRun(ctx context.Context, params json.RawMessage, noti
 		d.notifyMu.Unlock()
 	}()
 
-	out, err := r.Run(ctx, target, p.Task)
+	out, err := r.Run(ctx, target, p.Task, "")
 	if err != nil {
 		return nil, err
 	}

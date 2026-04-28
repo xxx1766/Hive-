@@ -289,6 +289,47 @@ deps: requirements.txt
 
 **向后兼容**：`kind` 省略时默认 `binary`，现有 Image 无需改动。
 
+### Conversation 与多轮协作
+
+MVP 早期 Hive 已经具备 Agent 之间的底层消息能力（`peer/send` / `peer/recv` IPC + `events/publish/subscribe` pub-sub），但消息是 fire-and-forget —— 没有"任务从开始到完成的多轮 transcript"这个概念，更没有上限把跑飞的 Agent 圈住。Conversation 把这一层补齐。
+
+**一个 Conversation 是 Room 内一组 Agent 围绕同一个任务的有限轮多消息序列，daemon 端持久化整段 transcript 并强制轮数上限。**
+
+```
+       create               start              all-done
+planned ────► planned ────► active ────► done
+                              │ ▲
+                              │ └── peer/send (round++)
+                  cancel/cap  ▼
+                          cancelled
+                              ▼ (daemon restart)
+                          interrupted
+```
+
+**生命周期 5 状态**：
+
+| 状态 | 含义 | 谁推动转换 |
+|---|---|---|
+| `planned` | 已声明，未派发；UI 排队 | `conversation/create` |
+| `active` | 已派发给 InitialTarget，正在轮转 | `conversation/start` |
+| `done` | 初始 Agent 报 task/done | runner |
+| `failed` | runner 报 task/error | runner |
+| `cancelled` | 用户主动取消 / 触轮上限（reason="round_cap"） | UI / daemon |
+| `interrupted` | daemon 重启时还在 active；旧进程已死，没人能续 | recovery sweep |
+
+**Round 计数语义**：每次一条 `peer/send` 携带 `conv_id` 从 daemon 视角 = 1 round。`max_rounds` 默认 8。Intercept hook 在路由前检查 `RoundCount < MaxRounds`，超就 reject + flip status=cancelled，原因 `round_cap`。这条不变量是 **"Agent 跑飞被 daemon 圈住"** 的物理边界 —— 不是 prompt-engineered 边界。
+
+**Runner 集成**：内置 runner（`hive-skill-runner`、`hive-workflow-runner`）的主循环从单 `Tasks()` 改成 select 两路：`Tasks()`（一次性派发）和 `Peers()`（Conversation 中的 follow-up）。从 peer 来的 message 复用同一个执行体，唯一差别是 reply 走 `PeerSend(from, …, WithConv(convID))`，而非 `task.Reply` —— 让 round 计数器落在正确的 transcript 上。
+
+**透出**：每个 Conversation 一个文件 `<RoomsDir>/<roomID>/conversations/<convID>.json`，原子 temp+rename 写入。daemon 内置 HTTP UI（`HIVE_HTTP_ADDR`，默认 `127.0.0.1:8910`）通过 SSE 流推送 `conversation.{created,started,message,finished}` 事件，浏览器开 `:8910` 即可看到 plan / in-progress / done 三栏 kanban + 时间线 + volume 浏览器。
+
+**与 Volume 的关系**：Conversation 走 transcript 的"消息流"轨道；Volume 走"持久化产出"轨道。一个 paper-writer Agent 可能既 PeerSend 给 paper-outline 要 TOC（→ 进 Conversation），又 fs_write 到 `paper-osdi-draft/design.md`（→ 进 Volume）。两条轨道在 Hive 里都是 first-class，UI 也并列展示。
+
+**v2（不在本期）**：
+1. **自动招聘下属**：manager-rank Agent 在 ReAct 循环里能调 `hive.HireJunior(ref, rank, quota)`；daemon 强制 rank 不超过自身、配额从自身 carve。
+2. **跨 Room Conversation**：通过 Volume 桥接两个 Room 的 transcript（类比现有的跨 Room events）。
+3. **Subordinate tree**：UI 渲染"谁招聘了谁"的层级，让委托关系可观察。
+
 ---
 
 ## 完整工作流示例
