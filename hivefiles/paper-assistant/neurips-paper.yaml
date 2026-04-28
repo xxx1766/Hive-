@@ -1,0 +1,41 @@
+# Second paper project — same team, different draft volume.
+# Demonstrates: paper-corpus shared across Rooms, draft isolated per-project.
+room: paper-neurips-2026
+entry: paper-outline
+agents:
+  - image: paper-scout:0.1.0
+    rank: staff
+    quota:
+      api_calls:
+        http: 30
+      tokens:
+        "gpt-4o-mini": 20000
+    volumes:
+      - {name: paper-neurips-draft, mode: rw, mountpoint: /shared/draft}
+
+  - image: paper-outline:0.1.0
+    rank: staff
+    quota:
+      tokens:
+        "gpt-4o-mini": 20000
+    volumes:
+      - {name: paper-corpus,        mode: ro, mountpoint: /shared/corpus}
+      - {name: paper-neurips-draft, mode: rw, mountpoint: /shared/draft}
+
+  - image: paper-writer:0.1.0
+    rank: manager
+    quota:
+      tokens:
+        "gpt-4o-mini": 80000
+    volumes:
+      - {name: paper-corpus,        mode: ro, mountpoint: /shared/corpus}
+      - {name: paper-neurips-draft, mode: rw, mountpoint: /shared/draft}
+
+  - image: paper-reviewer:0.1.0
+    rank: staff
+    quota:
+      tokens:
+        "gpt-4o-mini": 15000
+    volumes:
+      - {name: paper-corpus,        mode: ro, mountpoint: /shared/corpus}
+      - {name: paper-neurips-draft, mode: ro, mountpoint: /shared/draft}

@@ -1,0 +1,17 @@
+[
+  {
+    "id": "2024.10001",
+    "title": "Sliding Window Attention for Long-Context Transformers",
+    "abstract": "We propose a fixed sliding-window attention pattern that reduces the O(n^2) memory cost of self-attention to O(nw), where w is the window size. Empirically, w=512 captures most local dependencies but loses long-range coreference signals on books and code."
+  },
+  {
+    "id": "2024.10002",
+    "title": "BigBird: Block-Sparse Attention with Random and Global Tokens",
+    "abstract": "BigBird combines local windows, random keys, and global tokens to approximate full attention with linear cost. The random keys provide a probabilistic guarantee on long-range information flow, but the chosen sparsity is fixed at training time and does not adapt to head-level specialisation."
+  },
+  {
+    "id": "2024.10003",
+    "title": "Learned Token Selection for Efficient Long-Context Inference",
+    "abstract": "We train a lightweight scorer that selects the top-m most relevant keys per query at inference time. Across 8 long-context benchmarks, our method matches dense attention with 12% of the FLOPs but requires careful warmup to avoid degenerate selections during early training."
+  }
+]

@@ -1,0 +1,13 @@
+name: paper-outline
+version: 0.1.0
+kind: skill
+skill: SKILL.md
+model: gpt-4o-mini
+rank: staff
+tools: [fs, llm]
+capabilities:
+  requires: [fs, llm]
+  provides: [paper-outline]
+quota:
+  tokens:
+    "gpt-4o-mini": 20000
