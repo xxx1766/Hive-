@@ -38,7 +38,7 @@ hive hire my-room xxx1766/Hive-#registry/agents/brief@main
 ## Hivefile 也能远端拉
 
 ```bash
-hive up github://xxx1766/Hive-/registry/hivefiles/skill-demo
+hive hire -f github://xxx1766/Hive-/registry/hivefiles/skill-demo
 ```
 
 Hivefile 里面 `agents:` 列表写远端 ref 时，daemon 递归 pull 每一个依赖 Agent。

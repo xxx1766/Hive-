@@ -51,8 +51,8 @@ say "4/14 build four Agent images (3 binary + 1 skill)"
 ./bin/hive build ./examples/brief     | sed 's/^/  /'
 
 say "5/14 up two Rooms with the same three Agents (namespace-isolated)"
-ROOM_A=$(./bin/hive up hivefiles/demo/room-a.yaml)
-ROOM_B=$(./bin/hive up hivefiles/demo/room-b.yaml)
+ROOM_A=$(./bin/hive hire -f hivefiles/demo/room-a.yaml)
+ROOM_B=$(./bin/hive hire -f hivefiles/demo/room-b.yaml)
 echo "   ROOM_A=$ROOM_A"
 echo "   ROOM_B=$ROOM_B"
 

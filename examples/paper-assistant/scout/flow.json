@@ -1,0 +1,32 @@
+{
+  "description": "Stub arxiv search → LLM produces a related-work section → fs_write to /shared/draft/related.md.",
+  "steps": [
+    {
+      "id": "search",
+      "tool": "net_fetch",
+      "args": {"url": "http://127.0.0.1:8992/papers.json"}
+    },
+    {
+      "id": "summarise",
+      "tool": "llm_complete",
+      "args": {
+        "model": "gpt-4o-mini",
+        "max_tokens": 800,
+        "messages": [
+          {"role": "system", "content": "You are a literature scout for an academic paper. You will receive (a) the user's research topic, then (b) a JSON array of arxiv paper records (id/title/abstract). Output Markdown ONLY: a 2-sentence overview paragraph; then one bullet per paper (≤2 sentences: mechanism + the gap it leaves vs the topic); then a 3-column table | Paper | Mechanism | Gap |. Stay concrete — name the gap each paper leaves."},
+          {"role": "user", "content": "$input.topic"},
+          {"role": "user", "content": "$steps.search.body"}
+        ]
+      }
+    },
+    {
+      "id": "write",
+      "tool": "fs_write",
+      "args": {
+        "path": "/shared/draft/related.md",
+        "content": "$steps.summarise.text"
+      }
+    }
+  ],
+  "output": "$steps.summarise.text"
+}

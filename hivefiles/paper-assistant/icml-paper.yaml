@@ -1,0 +1,49 @@
+# Paper-assistant team for an ICML submission. Two volumes:
+#   - paper-corpus       (ro): the author's writing-style corpus (shared across papers)
+#   - paper-icml-draft   (rw): this paper's working draft (per-project)
+#
+# Typical session:
+#   ROOM=$(./bin/hive hire -f hivefiles/paper-assistant/icml-paper.yaml)
+#   ./bin/hive run "$ROOM" --target paper-scout    '{"topic":"..."}'
+#   ./bin/hive run "$ROOM" --target paper-outline  '{"hypothesis":"..."}'
+#   ./bin/hive run "$ROOM" --target paper-writer   '{"section":"methods"}'
+#   ./bin/hive run "$ROOM" --target paper-reviewer '{"section":"methods"}'
+room: paper-icml-2026
+entry: paper-outline
+agents:
+  - image: paper-scout:0.1.0
+    rank: staff
+    quota:
+      api_calls:
+        http: 30
+      tokens:
+        "gpt-4o-mini": 20000
+    volumes:
+      - {name: paper-icml-draft, mode: rw, mountpoint: /shared/draft}
+
+  - image: paper-outline:0.1.0
+    rank: staff
+    quota:
+      tokens:
+        "gpt-4o-mini": 20000
+    volumes:
+      - {name: paper-corpus,     mode: ro, mountpoint: /shared/corpus}
+      - {name: paper-icml-draft, mode: rw, mountpoint: /shared/draft}
+
+  - image: paper-writer:0.1.0
+    rank: manager
+    quota:
+      tokens:
+        "gpt-4o-mini": 80000
+    volumes:
+      - {name: paper-corpus,     mode: ro, mountpoint: /shared/corpus}
+      - {name: paper-icml-draft, mode: rw, mountpoint: /shared/draft}
+
+  - image: paper-reviewer:0.1.0
+    rank: staff
+    quota:
+      tokens:
+        "gpt-4o-mini": 15000
+    volumes:
+      - {name: paper-corpus,     mode: ro, mountpoint: /shared/corpus}
+      - {name: paper-icml-draft, mode: ro, mountpoint: /shared/draft}    # ro = the demo's Rank-as-policy point

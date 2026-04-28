@@ -1,0 +1,13 @@
+name: paper-writer
+version: 0.1.0
+kind: skill
+skill: SKILL.md
+model: gpt-4o-mini
+rank: manager
+tools: [fs, llm]
+capabilities:
+  requires: [fs, llm]
+  provides: [paper-writing]
+quota:
+  tokens:
+    "gpt-4o-mini": 80000

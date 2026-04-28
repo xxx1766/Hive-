@@ -70,7 +70,7 @@ func (f *File) Validate() error {
 		if a.Image == "" {
 			return fmt.Errorf("agents[%d].image is required", i)
 		}
-		// Remote refs resolve at `hive up` time (name comes from the
+		// Remote refs resolve at `hive hire -f` time (name comes from the
 		// fetched agent.yaml). Use the tail segment as a provisional name
 		// for duplicate detection.
 		if remote.LooksRemote(a.Image) {

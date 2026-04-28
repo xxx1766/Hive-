@@ -55,7 +55,7 @@ OPENAI_API_KEY=sk-... sudo -E ./scripts/demo.sh   # 用真 LLM
 
 # 打包一个 Agent
 ./bin/hive build ./examples/echo
-./bin/hive images
+./bin/hive agents
 
 # 创建 Room 并招聘 Agent
 ROOM=$(./bin/hive init my-room)
@@ -75,13 +75,13 @@ ROOM=$(./bin/hive init my-room)
 |---|---|
 | `hive ping` | 检查 daemon 是否在 |
 | `hive version` | 打印 CLI + daemon 版本 |
-| `hive build <dir>` | 把一个 Agent 源码目录打包为 Hive Image |
-| `hive images` | 列出本地 Image |
+| `hive build <dir>` | 把一个 Agent 源码目录打包为 Hive Image（"Hive Image" 是底层打包概念，CLI 里就叫 Agent） |
+| `hive agents` | 列出本地已装好的 Agent |
 | `hive init <name>` | 创建新 Room，返回 RoomID |
 | `hive rooms` | 列出所有 Room |
-| `hive hire <room> <ref>` | 把 Agent 招进 Room；`<ref>` 可以是 `name:version`（本地）或远端 URL（三种形式见 §Registry） |
+| `hive hire <room> <ref>` | 把单个 Agent 招进已有 Room；`<ref>` 可以是 `name:version`（本地）或远端 URL（三种形式见 §Registry） |
+| `hive hire -f <hivefile\|url> [--room <name>]` | 批量模式：按 Hivefile 一次性建 Room + 招聘所有声明的 Agent；`--room` 可覆盖 Hivefile 里的 room 名；hivefile 本身和里面的 Agent 都可远端 |
 | `hive pull <url>` | 显式把一个远端 Agent 拉到本地 store |
-| `hive up <hivefile\|url> [--room <name>]` | 按 Hivefile 声明一次性建 Room + 招聘所有 Agent；`--room` 可覆盖 Hivefile 里的 room 名；hivefile 本身和里面的 Agent 都可远端 |
 | `hive team <room>` | 列出 Room 内 Agent 及配额剩余 |
 | `hive volume create/ls/rm` | 管理跨 Room 持久化卷 |
 | `hive run <room> [task]` | 下发任务，实时流式打印 Agent 日志（`--target <image>` 选收件人） |
@@ -274,10 +274,10 @@ hive hire my-room xxx1766/Hive-#registry/agents/brief@v0.1.0            # 3. 短
 
 `@<ref>` 可选（tag / branch / commit sha），缺省 `main`。
 
-`hive up` 同样支持远端 Hivefile，且 Hivefile 里 `agents:` 列表里的每一项也可以是远端 ref：
+`hive hire -f` 同样支持远端 Hivefile，且 Hivefile 里 `agents:` 列表里的每一项也可以是远端 ref：
 
 ```bash
-hive up github://xxx1766/Hive-/registry/hivefiles/skill-demo
+hive hire -f github://xxx1766/Hive-/registry/hivefiles/skill-demo
 ```
 
 **kind=binary 不支持远端拉取**（编译产物跨平台 + 信任模型太重）；想分发 binary Agent 仍需要用户本地 `hive build`。
@@ -431,9 +431,9 @@ make demo           # 端到端 smoke（需要 root）
 - [x] ~~**`capabilities.requires` 校验**~~ —— 已生效。hire 时 manifest `requires:` 会和 Rank `Capabilities()` 对照，不匹配返回 `rank_violation`。`provides:` 目前仅用于声明，未来可做 discovery。
 - [x] ~~**`hive hire --quota`**~~ —— 已支持，`--quota '<json>'` flag。
 - [x] ~~**`hive logs <room>`**~~ —— 已实现。`hive logs <room>` 一次性 dump 所有 Agent 的 stderr；`hive logs <room> <agent>` 筛一个。无 tail/follow（用 `tail -f` 直接读文件）。
-- [x] ~~**`hive up --room <name>` 覆盖**~~ —— 已支持。同一份 Hivefile 可以用 `hive up hivefile.yaml --room demo-a` / `--room demo-b` 跑出并行的独立 Room。
+- [x] ~~**`hive hire -f --room <name>` 覆盖**~~ —— 已支持。同一份 Hivefile 可以用 `hive hire -f hivefile.yaml --room demo-a` / `--room demo-b` 跑出并行的独立 Room。
 - [x] ~~**demo.sh 的 `set -o pipefail` 坑**~~ —— 抽了个 `run_tolerant` helper（`scripts/demo.sh`），把"明知可能失败（quota 拒绝 / 远端拉取 / 负断言）"的调用包起来，`out=$(run_tolerant ...)` 就不会再被 pipefail 或 `set -e` 误伤。
-- [x] ~~**Agent 崩溃的诊断信息难回传**~~ —— `ns.NewAgentCommand` 现在多开了一条 init-err 管道（父进程读端，子进程 FD 3）。`RunInit` 在 setup 失败时把错误同时写到 stderr log 和 FD 3，成功时在 `syscall.Exec` 之前把 FD 3 关掉；`agent.Conn.WaitInit` 阻塞到这一信号再让 `room.Hire` 返回，于是 `hive hire` / `hive up` 看到的是 `sandbox init: setup: pivot_root: operation not permitted` 而不再是笼统的 `agent exited`。
+- [x] ~~**Agent 崩溃的诊断信息难回传**~~ —— `ns.NewAgentCommand` 现在多开了一条 init-err 管道（父进程读端，子进程 FD 3）。`RunInit` 在 setup 失败时把错误同时写到 stderr log 和 FD 3，成功时在 `syscall.Exec` 之前把 FD 3 关掉；`agent.Conn.WaitInit` 阻塞到这一信号再让 `room.Hire` 返回，于是 `hive hire`（含 `-f`）看到的是 `sandbox init: setup: pivot_root: operation not permitted` 而不再是笼统的 `agent exited`。
 - [x] ~~**Agent 日志没 rotation**~~ —— 新增 `internal/daemon/logrotate.go`：每个 Agent 的 `*.stderr.log` 默认 10 MiB 上限，到顶就 rename 成 `.1` + 重开新文件，只保留一份 backup（"不爆盘"重于"留全量"）。可用 `HIVE_LOG_MAX_BYTES` 覆盖。顺带修了一个 FD 泄漏：以前 hire 的 log 文件始终不 close，现在 `room.Hire` 在 agent 退出时 close（cmd.Wait 已 join exec 的 stderr copy goroutine，无丢字节 race）。
 
 ### 🧱 中期（架构内稳健性）
@@ -460,7 +460,7 @@ make demo           # 端到端 smoke（需要 root）
 - [ ] **seccomp-bpf syscall 白名单**：生产级沙箱补强，防止内核漏洞提权。
 - [ ] **user namespace + uid remap**：脱离 root 运行 daemon。
 - [ ] **OCI-style 层状镜像**：取代当前的"复制整个目录"策略，支持层缓存、内容寻址、digest 校验。
-- [x] ~~**远端 Registry（`hive pull`）**~~ —— MVP 简化版已完成：GitHub 公开目录作 registry，`hive hire` / `hive up` 接受三种 URL 形式；详见 `registry/README.md`。真正的"独立 Registry 服务 + hive push"仍在 v2。
+- [x] ~~**远端 Registry（`hive pull`）**~~ —— MVP 简化版已完成：GitHub 公开目录作 registry，`hive hire` / `hive hire -f` 接受三种 URL 形式；详见 `registry/README.md`。真正的"独立 Registry 服务 + hive push"仍在 v2。
 - [x] ~~**跨 Room 持久化记忆（共享 KV）**~~ —— 已完成：`hive volume create`、`memory/*` API、弱一致语义。见 §Volume & 跨 Room 共享记忆。
 - [ ] **跨 Room 实时通信**：Room A Agent 给 Room B Agent 发消息（等价于 docker networks，不是持久化）。
 - [x] ~~**Volume filesystem mount**~~ —— 已完成：Hivefile `agents[].volumes` 声明 ro/rw 挂载点；`hive hire --volume name:mountpoint:mode` 支持 ad-hoc；fsproxy 自带 mount redirect，写落到真实 volume 目录。

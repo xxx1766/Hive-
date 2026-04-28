@@ -1,0 +1,14 @@
+name: paper-scout
+version: 0.1.0
+kind: workflow
+workflow: flow.json
+rank: staff
+tools: [net, llm, fs]
+capabilities:
+  requires: [net, llm, fs]
+  provides: [literature-survey]
+quota:
+  api_calls:
+    http: 30
+  tokens:
+    "gpt-4o-mini": 20000
