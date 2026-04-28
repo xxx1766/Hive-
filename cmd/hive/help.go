@@ -78,7 +78,12 @@ hived. Prints the RoomID; capture it for subsequent hire/run/team/stop.`,
 		long: `Two shapes:
 
 1. Single hire (Room must already exist):
-     hive hire <room> <ref> [--rank <name>] [--quota <json>] [--volume <n>:<mp>[:<m>]]...
+     hive hire <room> <ref> [--rank <name>] [--quota <json>] [--volume <n>:<mp>[:<m>]]... [--no-prompt]
+
+   When stdin is a terminal AND none of --rank/--quota/--volume are given,
+   hire prompts interactively for those overrides (Enter to keep manifest
+   defaults; Ctrl-D to skip remaining). Pass --no-prompt to disable even on
+   a TTY. Piped/scripted invocations never prompt.
 
    <ref> may be:
      name:version                             local Agent (from the store)

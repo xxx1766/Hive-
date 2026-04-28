@@ -205,6 +205,7 @@ func cmdHire(ctx context.Context, args []string) {
 	rank := ""
 	var quotaRaw json.RawMessage
 	var volumes []ipc.VolumeMountRef
+	noPrompt := false
 	for i := 2; i < len(args); i++ {
 		switch args[i] {
 		case "--rank":
@@ -237,7 +238,22 @@ func cmdHire(ctx context.Context, args []string) {
 			}
 			volumes = append(volumes, v)
 			i++
+		case "--no-prompt", "--non-interactive":
+			noPrompt = true
 		}
+	}
+
+	// Auto-prompt when the user is interactive and didn't pre-specify any
+	// override on the command line. Skipped on a pipe (CI, demos) so scripts
+	// don't block on stdin. Explicit --no-prompt opt-out for users who want
+	// "use manifest defaults, no questions" even on a TTY.
+	if !noPrompt && rank == "" && len(quotaRaw) == 0 && len(volumes) == 0 && stdinIsTTY() {
+		pRank, pQuota, pVols, perr := promptHireOverrides(os.Stdin, os.Stderr, refInput)
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "hire: %v\n", perr)
+			os.Exit(2)
+		}
+		rank, quotaRaw, volumes = pRank, pQuota, pVols
 	}
 
 	c := mustDial(ctx)
@@ -284,6 +300,10 @@ func cmdHireFile(ctx context.Context, args []string) {
 		case a == "--rank", a == "--quota", a == "--volume":
 			fmt.Fprintf(os.Stderr, "hire: %s is per-agent and belongs in the Hivefile, not on `hive hire -f`\n", a)
 			os.Exit(2)
+		case a == "--no-prompt", a == "--non-interactive":
+			// no-op: declarative -f mode never prompts. Accept the flag silently
+			// so a wrapping script can pass it unconditionally without forking
+			// per-mode arg lists.
 		default:
 			fmt.Fprintf(os.Stderr, "hire: unknown argument %q\n", a)
 			os.Exit(2)
