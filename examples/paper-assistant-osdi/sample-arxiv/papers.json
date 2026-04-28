@@ -1,0 +1,17 @@
+[
+  {
+    "id": "2024.20001",
+    "title": "Caladan: Mitigating Interference at Microsecond Timescales",
+    "abstract": "Caladan is a per-core scheduler that detects interference between co-located workloads via control signals (queueing delay, cache misses, memory bandwidth) and reallocates cores at microsecond granularity. It outperforms Shenango on mixed latency-throughput workloads by 1.4-2.1x, but its control-loop tuning assumes a single-tenant cluster and degrades under multi-tenant churn."
+  },
+  {
+    "id": "2024.20002",
+    "title": "Anna: A KVS for Any Scale",
+    "abstract": "Anna achieves coordination-free linearizability through monotonic CRDTs and a wait-free per-thread datastore. Its multi-master design scales near-linearly to 100s of cores on a single machine and gracefully across geo-distributed deployments. The CRDT model, however, restricts the supported value types to those forming valid lattices, limiting expressiveness vs RocksDB."
+  },
+  {
+    "id": "2024.20003",
+    "title": "io_uring: Asynchronous I/O for Linux at Scale",
+    "abstract": "io_uring exposes a shared-memory ring-buffer interface between userspace and the kernel, eliminating syscall overhead for I/O submission. End-to-end throughput gains of 3-7x are reported for storage workloads, but the async semantics complicate crash consistency and require careful programming to avoid TOCTOU races on the ring."
+  }
+]
