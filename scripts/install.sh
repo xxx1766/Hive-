@@ -73,6 +73,14 @@ done
 STATE_DIR="${HIVE_STATE:-$HOME/.hive}"
 mkdir -p "$STATE_DIR/images" "$STATE_DIR/rooms"
 
+# Breadcrumb for `hive update`: lets the CLI find this source tree later
+# without asking the user. Re-run install.sh from a different checkout to
+# point future updates at the new tree.
+INSTALLED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+cat > "$STATE_DIR/install.json" <<EOF
+{"source_dir":"$REPO_ROOT","prefix":"$PREFIX","installed_at":"$INSTALLED_AT"}
+EOF
+
 # ── Next steps ────────────────────────────────────────────────────────────
 
 printf "\n\033[1;32m✓ installed\033[0m — binaries in %s, state in %s\n\n" "$BIN_DIR" "$STATE_DIR"
