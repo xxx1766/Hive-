@@ -46,6 +46,12 @@ import (
 const (
 	maxSkillIterations = 20
 	toolResultCap      = 2000 // bytes of tool result shown to the LLM
+	// llmMaxCompletionTokens caps each ReAct turn's response. Sized for
+	// long-form writing tasks (e.g. paper-writer drafting an 800-word
+	// section in one shot). Tool-call turns only use ~30 tokens; reasoning
+	// models like gpt-5 may consume non-trivial reasoning_tokens out of
+	// this budget — keep the cap generous.
+	llmMaxCompletionTokens = 4000
 )
 
 func main() {
@@ -149,12 +155,17 @@ func react(ctx context.Context, a *hive.Agent, system, model string, tools []str
 	}
 
 	for iter := 1; iter <= maxSkillIterations; iter++ {
-		text, _, err := a.LLMComplete(ctx, "", model, msgs, 512)
+		text, _, err := a.LLMComplete(ctx, "", model, msgs, llmMaxCompletionTokens)
 		if err != nil {
 			a.Log("error", "llm call failed", map[string]any{"iter": iter, "err": err.Error()})
 			return nil, err
 		}
 		msgs = append(msgs, hive.LLMMessage{Role: "assistant", Content: text})
+
+		// Log a snippet of the raw response so post-mortem debugging of
+		// "skill returned empty / unexpected" is possible without rerunning.
+		// Truncated at 200 chars to keep notification volume bounded.
+		a.Log("info", "llm reply", map[string]any{"iter": iter, "len": len(text), "head": truncatePrefix(text, 200)})
 
 		parsed := parseReply(text)
 
@@ -220,18 +231,37 @@ type reply struct {
 	Answer string         `json:"answer,omitempty"`
 }
 
-// jsonObjRe matches the first top-level JSON object in a string. LLMs often
-// wrap JSON in prose or ```json fences, so we pluck the object out.
+// parseReply finds the first parseable {tool}/{answer} JSON object in the
+// LLM's output. Three layers, each more permissive than the last:
+//
+//  1. Whole text is exactly one JSON object (the well-behaved case).
+//  2. Whole text contains exactly one outer object — the regex below
+//     anchors on the first '{' and the LAST '}' (greedy), good when the
+//     LLM wraps the object in prose or ```json fences.
+//  3. The text has multiple top-level objects (some models like to "plan"
+//     the next 3 tool calls in one reply). We walk the string brace-by-
+//     brace, parse each balanced top-level object in turn, and return
+//     the first one with a usable shape. Subsequent objects are
+//     discarded — the runner does one tool call per turn, so chaining
+//     in a single reply is wishful thinking on the model's part.
+//
+// "Usable shape" means tool != "" || answer != "". Objects that parse
+// but carry neither field are skipped (they're probably {"thought":"…"}
+// or similar speculative additions).
 var jsonObjRe = regexp.MustCompile(`\{(?s).*\}`)
 
 func parseReply(text string) reply {
 	trimmed := strings.TrimSpace(text)
+
+	// 1. Exact single-object case.
 	var r reply
 	if err := json.Unmarshal([]byte(trimmed), &r); err == nil {
 		if r.Tool != "" || r.Answer != "" {
 			return r
 		}
 	}
+
+	// 2. Greedy regex (one outer object, possibly wrapped).
 	if m := jsonObjRe.FindString(trimmed); m != "" {
 		var r2 reply
 		if err := json.Unmarshal([]byte(m), &r2); err == nil {
@@ -240,7 +270,65 @@ func parseReply(text string) reply {
 			}
 		}
 	}
+
+	// 3. Multi-object fallback: walk the string for balanced top-level
+	// objects and return the first one we can parse into a usable shape.
+	for _, obj := range topLevelObjects(trimmed) {
+		var r3 reply
+		if err := json.Unmarshal([]byte(obj), &r3); err == nil {
+			if r3.Tool != "" || r3.Answer != "" {
+				return r3
+			}
+		}
+	}
 	return reply{}
+}
+
+// topLevelObjects scans s and yields each balanced top-level JSON object
+// substring (in order). Brace counting is naive but JSON-safe enough:
+// strings are tracked so braces inside `"..."` don't fool the depth
+// counter, and `\"` escapes are handled. Anything outside braces (prose,
+// fences, blank lines) is skipped.
+func topLevelObjects(s string) []string {
+	var out []string
+	depth := 0
+	start := -1
+	inStr := false
+	escape := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if inStr {
+			switch c {
+			case '\\':
+				escape = true
+			case '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '{':
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		case '}':
+			if depth > 0 {
+				depth--
+				if depth == 0 && start >= 0 {
+					out = append(out, s[start:i+1])
+					start = -1
+				}
+			}
+		}
+	}
+	return out
 }
 
 // ── Prompt construction ──────────────────────────────────────────────────
@@ -288,6 +376,16 @@ func parseCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// truncatePrefix returns up to n bytes of s, with an ellipsis when cut.
+// Used for log lines so the wire / log file doesn't get blown up by the
+// occasional long LLM reply.
+func truncatePrefix(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 func containsAny(hay, needles []string) bool {
