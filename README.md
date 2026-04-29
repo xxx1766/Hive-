@@ -222,13 +222,14 @@ tools: [llm]
 
 | 方向 | Method | 说明 |
 |---|---|---|
-| Hive → Agent | `task/run` | 下发任务 |
-| Hive → Agent | `peer/recv` | 同 Room peer 发来的消息 |
+| Hive → Agent | `task/run` | 下发任务（带可选 `conv_id` 把任务绑到一个 Conversation） |
+| Hive → Agent | `peer/recv` | 同 Room peer 发来的消息（带 `conv_id` 时触发 round 计数） |
 | Hive → Agent | `shutdown` | 温和终止 |
 | Agent → Hive | `fs/read` `fs/write` `fs/list` | 受 Rank 约束的文件 I/O |
 | Agent → Hive | `net/fetch` | HTTP 请求（扣 `api_calls` 配额） |
 | Agent → Hive | `llm/complete` | LLM 调用（扣 token 配额） |
-| Agent → Hive | `peer/send` | 给同 Room 的指定 Agent 发消息 |
+| Agent → Hive | `peer/send` | 给同 Room 的指定 Agent 发消息（fire-and-forget） |
+| Agent → Hive | `hire/junior` | manager+ Rank：运行时招聘下属 Agent，配额从自身 carve（见 §多 Agent 协作） |
 | Agent → Hive | `task/done` `task/error` | 任务终态 |
 | Agent → Hive | `log` | 结构化日志 |
 
@@ -333,6 +334,72 @@ Agent 内部用 `fs_write("/shared/kb/paper.pdf", ...)` 写、`fs_read("/shared/
 权限：Rank 的 FSRead/FSWrite 会在 hire 时**自动扩出挂载点**（rw 加到 FSWrite，ro 只加到 FSRead），不用手动在 rank 里声明 `/shared/*`。
 
 参考实现：`examples/blob/`（把任意 path+content 写进 mounted volume，再 list 回来）；`scripts/demo.sh` 场景 12 演示两个 Room 通过 fs mount 交换文件。
+
+## 多 Agent 协作（Conversation / hire_junior / peer_call）
+
+Hive 的产品定位是 **"多 Agent 分工协作"** —— 这一节是把那句话从口号变成代码。三件配套：
+
+### 1. Conversation —— 多轮 transcript + 轮数上限
+
+`peer/send` 是 fire-and-forget 的底层消息 IPC，但裸用没有"任务从开始到结束"这个上层概念，agent 跑飞也没有外力能拦住。Conversation 把零散 peer 消息组成持久化的 task transcript，daemon 端强制 `max_rounds`（默认 8），任何方向的 hop 都计一轮，超就 status=cancelled，理由 `round_cap`。
+
+```bash
+# 通过 IPC / HTTP 创建 + 启动一个 Conversation
+curl -s -X POST http://127.0.0.1:8910/api/rooms/$ROOM/conversations \
+  -H 'Content-Type: application/json' \
+  -d '{"target":"paper-coordinator","input":{"section":"design"},"max_rounds":12}'
+# → {"conv_id":"conv-…","status":"planned"}
+
+curl -s -X POST http://127.0.0.1:8910/api/rooms/$ROOM/conversations/$CID/start
+# 之后看 SSE 实时事件
+curl -N http://127.0.0.1:8910/api/rooms/$ROOM/events
+```
+
+每个 Conversation 一份 JSON 文件，落在 `<RoomsDir>/<roomID>/conversations/<convID>.json`，原子 temp+rename 写入，daemon 重启时 `active` → `interrupted`（旧进程已死，没人能续）。
+
+### 2. hire_junior —— manager+ 运行时招聘下属
+
+manager+ Rank 的 Agent 在 ReAct 循环里能调 SDK `hive.HireJunior(ref, rank, opts)`：
+
+- `rank.CanHire` 三规则：调用方必须 `HireAllowed=true`（默认仅 manager + director）；child rank 必须**严格小于** self（manager 招 staff/intern，不能招另一个 manager —— 防 peer-cycle）；同 Room 内 image 名唯一。
+- **配额 carve**：每个 token / api_call 桶都通过 `quota.Consume` 原子地从 parent 扣减；任一桶不够，整个 hire 失败。Carve 是硬扣，子 agent 用不完不会自动回流（refund-on-exit 留 v2）。
+- **Subordinate tree**：`Member.Parent` + `roomstate.MemberSnap.Parent` 持久化树形结构。daemon 重启后整树原样恢复。HTTP UI Team tab 用 `└─ paper-writer (hired by paper-coordinator)` 这种 indent + 注解直观渲染。
+
+### 3. peer_call —— 同步等回复，让委派结果真回到 transcript
+
+`peer_send` 是 fire-and-forget；coordinator 委派给 worker 后立刻返回，conversation flips done，worker 的回复就被 `PeerSendIntercept` 拒掉。`peer_call`（仅 skill-runner 支持）补上同步语义：
+
+```
+1. 注册 awaiter (target, conv_id)   ← 在 send 前
+2. PeerSend 出去
+3. 阻塞读 awaiter 的 channel        ← peer-router goroutine 自动路由
+4. 把对方 reply payload 当 tool result 返还给 LLM
+```
+
+LLM 用 `{"tool":"peer_call","args":{"to":"paper-writer","payload":{"section":"design"},"timeout_seconds":120}}` 调；默认 60s 超时，可调到 300s。
+
+### 端到端 Demo：paper-coordinator
+
+`examples/paper-assistant/coordinator/` 是个 manager-rank skill agent，演示三件套全用：
+
+1. 接到 `{"section":"design"}` 任务
+2. `hire_junior` 现场招个 paper-writer (staff)，carve 30k tokens
+3. `peer_call` 把任务转给 writer 同步等回复
+4. 把 writer 的产出报告 (`design.md written, ~670 words`) weave 进 final answer
+
+跑起来：
+```bash
+./bin/hive build ./examples/paper-assistant/coordinator
+./bin/hive build ./examples/paper-assistant/writer
+./bin/hive volume create paper-osdi-corpus paper-osdi-draft
+cp examples/paper-assistant-osdi/sample-corpus/*.md ~/.hive/volumes/paper-osdi-corpus/
+ROOM=$(./bin/hive hire -f hivefiles/paper-assistant/coordinator-demo.yaml)
+# 浏览器开 http://127.0.0.1:8910，"+ New Conversation"，target=paper-coordinator，input={"section":"design"}
+```
+
+UI 上能看到完整的 4 条 transcript：task_input → peer (round 1，coord→writer) → peer (round 2，writer→coord) → task_output；Team tab 的 subordinate tree；Volumes tab 里的 design.md。完整 walkthrough 见 `examples/paper-assistant/coordinator/README.md`。
+
+详细架构 + v2 路线图见 `ARCHITECTURE.md` §"Conversation 与多轮协作" 和 §"Auto-hire 与配额 carve"。
 
 ## 架构速览
 
@@ -443,7 +510,7 @@ make demo           # 端到端 smoke（需要 root）
 - [ ] **Capabilities 匹配**：`requires` 和 `provides` 在 hire 时真 enforce（例如 Hivefile 里所有 `requires` 必须有对应的 `provides`）。
 - [ ] **更多 LLM provider**：现在只有 `mock` 和 `openai`（OpenAI-compatible）。加 `anthropic`、配置驱动的 provider routing。
 - [ ] **`hive exec <room> <agent> <cmd>`**：类似 `docker exec`，给运行中的 Agent 注入一次性任务。
-- [ ] **daemon 重启 Room 持久化**：目前 daemon 死了 Room 全灭；Room 状态应能从 `~/.hive/rooms/` 恢复。
+- [x] ~~**daemon 重启 Room 持久化**~~ —— 已完成：`internal/roomstate/` 把每个 Room 的 hire 清单序列化到 `state.json`，`recoverRooms` 启动时按清单重新 hire。Conversation 也跟着持久化（`<RoomsDir>/<roomID>/conversations/<convID>.json`），active → interrupted on restart。
 - [ ] **`lo` 接口补齐**：`CLONE_NEWNET` 默认 loopback 是 down 的，有些 Agent 内部库会意外失败。init 阶段 `ip link set lo up` 一下（或 Go 语言版的 netlink）。
 - [ ] **Agent 输出压缩/分片**：`fs/read` 大文件目前整包 base64 JSON 回传，无流式。加 `fs/read-stream` 或 chunked 语义。
 
@@ -454,9 +521,18 @@ make demo           # 端到端 smoke（需要 root）
 - [x] ~~**`manifest.kind` 字段**~~ —— 已完成：`internal/image/manifest.go` 加了 `Kind` / `Skill` / `Model` / `Tools` 字段；`internal/daemon/daemon.go:handleAgentHire` 检测 Kind 并走 `prepareSkillImage` 分支。
 - [x] ~~**`kind: skill` Agent 形态**~~ —— 已完成：`cmd/hive-skill-runner/` 二进制 + ReAct-lite JSON 循环；`examples/brief/` 作为参考 skill Agent。
 - [x] ~~**`kind: workflow` Agent 形态**~~ —— 已完成：`cmd/hive-workflow-runner` 支持两种模式：`workflow: flow.json` 静态声明 + `planner: PLANNER.md` LLM 规划；变量替换 `$input.x` / `$steps.<id>.<path>`；`examples/{url-summary,research}/` 两个参考实现。
+- [x] ~~**Conversation primitive（多轮 + 上限）**~~ —— 已完成：`internal/conversation/` Store + Bus；`PeerSendIntercept`/`Delivered` hooks；`max_rounds` 强制；HTTP UI kanban + SSE 实时事件。见 §多 Agent 协作。
+- [x] ~~**Auto-hire 下属（manager+ 招 staff/intern）**~~ —— 已完成：SDK `HireJunior`、`hire/junior` IPC、`rank.CanHire` 三规则、原子配额 carve、`Member.Parent` 持久化、UI subordinate tree。见 §多 Agent 协作 + `ARCHITECTURE.md` §"Auto-hire 与配额 carve"。
+- [x] ~~**`peer_call` 同步等回复**~~ —— 已完成：skill-runner 加了 peer-router goroutine + awaiter registry；coordinator → worker → coordinator 完整 round-trip 进 transcript。见 `examples/paper-assistant/coordinator/`。
+- [x] ~~**HTTP UI**~~ —— 已完成：`internal/httpapi/` embed `index.html`，三栏 kanban + 时间线 + Team 树 + volume 浏览器；SSE 实时推送；默认 `127.0.0.1:8910`，`HIVE_HTTP_ADDR` 可改。
 
 ### 🚀 v2（`DEMO_PLAN.md` 里明确列为"不做"的大特性）
 
+- [ ] **`hire_junior` refund-on-exit**：subordinate 退出时把未消耗的 carve 自动还给 parent；现在是硬扣，余量丢弃。需要 quota actor 加 transactional transfer op。
+- [ ] **`peer_call` 在 workflow-runner**：现在只 skill-runner 支持 peer-router goroutine + awaiter；workflow agent 想 peer_call 还得走 fallback 路径或改成 skill。
+- [ ] **跨 Room Conversation**：Conversation 当前 Room-scoped；通过 Volume 桥接两个 Room 的 transcript 是自然延伸（类比已有的跨 Room events）。
+- [ ] **HTTP UI 鉴权**：默认 `127.0.0.1:8910` 只监本地。要远程访问得加 token / mTLS。
+- [ ] **HTTP UI hire/fire 控件**：当前 UI 只读，能创建 conversation 但不能直接 hire 新 agent。
 - [ ] **seccomp-bpf syscall 白名单**：生产级沙箱补强，防止内核漏洞提权。
 - [ ] **user namespace + uid remap**：脱离 root 运行 daemon。
 - [ ] **OCI-style 层状镜像**：取代当前的"复制整个目录"策略，支持层缓存、内容寻址、digest 校验。
