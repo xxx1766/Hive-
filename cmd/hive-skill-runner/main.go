@@ -38,6 +38,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/anne-x/hive/internal/runners"
 	hive "github.com/anne-x/hive/sdk/go"
@@ -88,18 +89,38 @@ func main() {
 	ctx := context.Background()
 	system := buildSystemPrompt(skill, tools)
 
+	// peer-router goroutine: owns a.Peers() consumption and routes each
+	// message to either a registered awaiter (peer_call in flight) or
+	// the fallback channel that drives runFromPeer.
+	awaiter := newPeerAwaiter()
+	go func() {
+		for {
+			select {
+			case p, ok := <-a.Peers():
+				if !ok {
+					awaiter.Close()
+					return
+				}
+				awaiter.Dispatch(p)
+			case <-a.Done():
+				awaiter.Close()
+				return
+			}
+		}
+	}()
+
 	for {
 		select {
 		case task, ok := <-a.Tasks():
 			if !ok {
 				return
 			}
-			runOne(ctx, a, task, system, model, tools)
-		case peer, ok := <-a.Peers():
+			runOne(ctx, a, task, system, model, tools, awaiter)
+		case peer, ok := <-awaiter.Fallback():
 			if !ok {
 				return
 			}
-			runFromPeer(ctx, a, peer, system, model, tools)
+			runFromPeer(ctx, a, peer, system, model, tools, awaiter)
 		case <-a.Done():
 			return
 		}
@@ -108,9 +129,9 @@ func main() {
 
 // runOne handles a top-level task/run dispatch. Final answer goes back
 // via task/done; failures via task/error.
-func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, system, model string, tools []string) {
+func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, system, model string, tools []string, aw *peerAwaiter) {
 	a.Log("info", "skill task received", map[string]any{"task_id": task.ID, "conv_id": task.ConvID})
-	out, err := react(ctx, a, system, model, tools, string(task.Input), task.ConvID)
+	out, err := react(ctx, a, system, model, tools, string(task.Input), task.ConvID, aw)
 	if err != nil {
 		_ = task.Fail(2, err.Error())
 		return
@@ -124,14 +145,14 @@ func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, system, model s
 // counted against the round budget). Peer messages without ConvID
 // (ad-hoc inter-Agent chat) are surfaced as a log and dropped, since
 // they have no transcript and no reply contract.
-func runFromPeer(ctx context.Context, a *hive.Agent, peer *hive.PeerMessage, system, model string, tools []string) {
+func runFromPeer(ctx context.Context, a *hive.Agent, peer *hive.PeerMessage, system, model string, tools []string, aw *peerAwaiter) {
 	if peer.ConvID == "" {
 		a.Log("info", "peer message dropped (no conv_id)", map[string]any{"from": peer.From})
 		return
 	}
 	a.Log("info", "skill peer received", map[string]any{"from": peer.From, "conv_id": peer.ConvID})
 
-	out, err := react(ctx, a, system, model, tools, string(peer.Payload), peer.ConvID)
+	out, err := react(ctx, a, system, model, tools, string(peer.Payload), peer.ConvID, aw)
 	if err != nil {
 		// Surface the failure as a peer reply so the originating Agent
 		// can choose to retry or give up. Wrapping in a struct keeps the
@@ -146,9 +167,11 @@ func runFromPeer(ctx context.Context, a *hive.Agent, peer *hive.PeerMessage, sys
 
 // react drives the ReAct loop. Returns the parsed answer (a map) on
 // success, or an error if the loop never converged. convID is threaded
-// through so any peer_send tool calls the LLM emits also count against
-// the right Conversation transcript.
-func react(ctx context.Context, a *hive.Agent, system, model string, tools []string, userInput, convID string) (map[string]any, error) {
+// through so any peer_send / peer_call tool calls the LLM emits also
+// count against the right Conversation transcript. aw is the peer-
+// router's awaiter registry — peer_call uses it to block this react
+// turn until the target replies.
+func react(ctx context.Context, a *hive.Agent, system, model string, tools []string, userInput, convID string, aw *peerAwaiter) (map[string]any, error) {
 	msgs := []hive.LLMMessage{
 		{Role: "system", Content: system},
 		{Role: "user", Content: userInput},
@@ -203,6 +226,35 @@ func react(ctx context.Context, a *hive.Agent, system, model string, tools []str
 			if _, set := parsed.Args["conv_id"]; !set {
 				parsed.Args["conv_id"] = convID
 			}
+		}
+
+		// peer_call is the synchronous variant: register an awaiter for
+		// (to, conv_id), peer_send the message, then block until the
+		// matching reply arrives or the timeout fires. The reply payload
+		// becomes the tool result the LLM sees — same shape as fs_read /
+		// llm_complete — so the LLM can synthesise the final answer
+		// inclusive of the subordinate's actual output.
+		//
+		// Without this tool, peer-driven coordinator patterns leak the
+		// reply outside the conversation transcript (timing-dependent;
+		// see examples/paper-assistant/coordinator/README.md "v1
+		// limitation" before this commit). peer_call closes that gap.
+		if parsed.Tool == "peer_call" {
+			result, terr := dispatchPeerCall(ctx, a, parsed.Args, convID, aw)
+			if terr != nil {
+				a.Log("error", "tool failed", map[string]any{"tool": "peer_call", "err": terr.Error()})
+				msgs = append(msgs, hive.LLMMessage{
+					Role:    "user",
+					Content: fmt.Sprintf("tool peer_call failed: %s", terr.Error()),
+				})
+				continue
+			}
+			a.Log("info", "tool ok", map[string]any{"tool": "peer_call"})
+			msgs = append(msgs, hive.LLMMessage{
+				Role:    "user",
+				Content: fmt.Sprintf("tool peer_call returned: %s", runners.ResultText(result, toolResultCap)),
+			})
+			continue
 		}
 
 		result, terr := runners.DispatchTool(ctx, a, parsed.Tool, parsed.Args)
@@ -350,9 +402,12 @@ func buildSystemPrompt(skill string, tools []string) string {
 		b.WriteString(`Tool: fs_list  — args {"path": string}; returns JSON array of entries` + "\n")
 	}
 	if containsAny(tools, []string{runners.GroupPeer}) {
-		b.WriteString(`Tool: peer_send — args {"to": string, "payload": any}; sends a message to another Agent in the same Room. ` +
-			`Inside a Conversation, the other Agent will reply with another peer message — you'll see it as a "tool peer_send returned" line. ` +
-			`Use peer_send to delegate a sub-step then await the reply, rather than trying to do everything yourself.` + "\n")
+		b.WriteString(`Tool: peer_send — args {"to": string, "payload": any}; fire-and-forget message to another Agent in the same Room. Returns "sent" immediately. ` +
+			`Use it when you don't need the other Agent's reply (one-way notify) or when subsequent flow is volume-mediated.` + "\n")
+		b.WriteString(`Tool: peer_call — args {"to": string, "payload": any, "timeout_seconds"?: int}; SYNCHRONOUS request/reply variant. ` +
+			`Sends the message AND waits for the target's peer_send reply (matched by from-name + conv_id), then returns the reply payload as the tool result so you can include it in your final answer. ` +
+			`Default timeout 60s, max 300s. Only works inside a Conversation (needs conv_id to route the reply). ` +
+			`This is the right tool for delegate-and-integrate patterns: hire_junior a worker, peer_call them with the task, weave their output into your answer.` + "\n")
 	}
 	if containsAny(tools, []string{runners.GroupMemory}) {
 		b.WriteString(`Tool: memory_put  — args {"scope": string, "key": string, "value": string}; scope="" is Room-private, scope="<volume>" is cross-Room` + "\n")
@@ -381,6 +436,69 @@ func parseCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// peerCallTimeout is the per-call deadline for peer_call. Sized for a
+// downstream Agent that needs to read the corpus, run an LLM completion,
+// and write a section back — anything beyond a minute is almost
+// certainly stuck and the caller should give up rather than block its
+// own task indefinitely. Configurable per-call via args.timeout_seconds.
+const peerCallTimeout = 60 * time.Second
+
+// peerCallTimeoutCap bounds args.timeout_seconds; rejects unreasonable
+// values that would let one stuck downstream peg the caller's task.
+const peerCallTimeoutCap = 5 * time.Minute
+
+// dispatchPeerCall implements the synchronous peer-call tool. The LLM
+// requests it as: {"tool":"peer_call", "args":{"to":<image>,
+// "payload":<any>, "timeout_seconds":<int, optional>}}. Returns
+// {"from":<image>, "payload":<reply>} on success.
+func dispatchPeerCall(ctx context.Context, a *hive.Agent, args map[string]any, convID string, aw *peerAwaiter) (any, error) {
+	to, _ := args["to"].(string)
+	if to == "" {
+		return nil, fmt.Errorf("peer_call: to is required")
+	}
+	if convID == "" {
+		// No conversation context — peer_call needs conv_id to route
+		// the reply back. Surface a clear error instead of routing to
+		// the fallback channel where the LLM never sees the result.
+		return nil, fmt.Errorf("peer_call: no conv_id in scope; peer_call only works inside a Conversation")
+	}
+	timeout := peerCallTimeout
+	if t, ok := args["timeout_seconds"].(float64); ok && t > 0 {
+		d := time.Duration(t) * time.Second
+		if d > peerCallTimeoutCap {
+			d = peerCallTimeoutCap
+		}
+		timeout = d
+	}
+
+	ch, cancel := aw.Register(to, convID)
+	defer cancel()
+
+	// PeerSend after Register so the reply can never beat us — even
+	// though delivery is asynchronous, registering first removes the
+	// race. PeerSend itself is a sync IPC call to the daemon; if the
+	// router rejects (peer not found, round_cap), the error returns
+	// here and the awaiter is cancelled by defer.
+	if err := a.PeerSend(ctx, to, args["payload"], hive.WithConv(convID)); err != nil {
+		return nil, fmt.Errorf("peer_call: send failed: %w", err)
+	}
+
+	select {
+	case reply, ok := <-ch:
+		if !ok {
+			return nil, fmt.Errorf("peer_call: awaiter cancelled before reply")
+		}
+		return map[string]any{
+			"from":    reply.From,
+			"payload": reply.Payload,
+		}, nil
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("peer_call: timeout after %s waiting for reply from %s", timeout, to)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // truncatePrefix returns up to n bytes of s, with an ellipsis when cut.

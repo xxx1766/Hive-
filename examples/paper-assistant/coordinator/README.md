@@ -6,11 +6,11 @@ Demonstrates Hive's third-pillar feature: a **manager-rank Agent spawning a subo
 
 | Surface | What appears |
 |---|---|
-| HTTP UI kanban | One conversation, planned → active → done in ~10s (the coordinator's own work) |
-| Timeline view | Tool calls: `fs_read style-notes.md`, `hire_junior paper-writer:0.1.0 (staff)`, `peer_send → paper-writer` |
+| HTTP UI kanban | One conversation, planned → active → done in ~30–60s (coordinator + writer combined; `peer_call` blocks the coordinator until the writer replies) |
+| Timeline view | `fs_read style-notes.md`, `hire_junior paper-writer:0.1.0 (staff)`, `peer_call → paper-writer` (round 1, going), peer reply `paper-writer → paper-coordinator` (round 2, returning) |
 | Team tab | Subordinate tree: `└─ paper-writer (hired by paper-coordinator)` |
 | `hive team` quota | coordinator's `tokens:openai/gpt-5.4-mini` drops by 30 000 (carved to writer) |
-| `paper-osdi-draft/design.md` | Real OSDI design section (~600 words), ~30s after the coordinator finishes |
+| `paper-osdi-draft/design.md` | Real OSDI design section (~600 words), already on disk by the time the conversation is `done` |
 
 ## Setup (one-time)
 
@@ -61,22 +61,26 @@ You can also drive it from the CLI:
 
 ```
 User → conversation/start → coordinator.task ─┐
-                                              │ react loop (5–10s):
+                                              │ react loop:
                                               │   1. fs_read style-notes.md
-                                              │   2. hire_junior(paper-writer, staff, +30k tokens)  ◀─ daemon carves quota
-                                              │      → daemon spawns paper-writer, sets Member.Parent = "paper-coordinator"
-                                              │   3. peer_send(to=paper-writer, payload={section:design})  ◀─ round 1 in conv
-                                              │   4. answer "Delegated…"
+                                              │   2. hire_junior(paper-writer, staff, +30k tokens)
+                                              │      → daemon carves quota; Member.Parent="paper-coordinator"
+                                              │   3. peer_call(to=paper-writer, payload={section:design})
+                                              │      ─── BLOCKS HERE ───
+                                              │      │
+                                              │      ▼ (round 1: outbound peer)
+                                              │   paper-writer.runFromPeer (~20–30s):
+                                              │     - fs_read corpus
+                                              │     - llm_complete (real GMI call)
+                                              │     - fs_write /shared/draft/design.md
+                                              │     - peer_send back to coordinator
+                                              │      │
+                                              │      ▼ (round 2: returning reply, awaiter wakes)
+                                              │   peer_call returns the reply payload as tool result
+                                              │   4. LLM weaves writer's report into final answer
+                                              │   5. task.Reply
                                               ▼
-                              conversation = done
-                                              │
-                              paper-writer.runFromPeer (~20–30s, runs to completion):
-                                              │   - fs_read corpus
-                                              │   - llm_complete (real GMI call)
-                                              │   - fs_write /shared/draft/design.md  ◀─ real output lands here
-                                              │   - peer_send back to coordinator → REJECTED (conv terminal)
-                                              ▼
-                              writer's reply fails silently (logged)
+                              conversation = done (transcript has both rounds)
 ```
 
 ## Verifying the four checks
@@ -99,14 +103,13 @@ head -30 "$HIVE_STATE/volumes/paper-osdi-draft/design.md"
 # coordinator's tokens:openai/gpt-5.4-mini should be 80000 - 30000 - (own usage) ≈ 47000
 ```
 
-## v1 limitation: subordinate's reply is timing-dependent
+## How `peer_call` makes this clean
 
-The coordinator's task converges (LLM emits `{"answer":...}`) and `task.Reply`s after step 4. That marks the **conversation `done`** — `PeerSendIntercept` then rejects any further round-counted hops. Two cases:
+Earlier this demo was timing-dependent: the coordinator's task ended as soon as the LLM emitted `{"answer":"Delegated…"}`, marking the conversation `done`. If `paper-writer` then tried to `peer_send` its result back, the daemon rejected it (`PeerSendIntercept` saw the terminal status). The writer's output landed on disk in the volume but never reached the transcript.
 
-- **Fast subordinate** (e.g. tool error in <1s): writer's `peer_send` reply lands **before** the coordinator finishes step 4 → reply arrives as round 2 in the transcript. You'll see it in the timeline.
-- **Slow subordinate** (normal 20–30s LLM draft): writer replies **after** the coordinator is done → reply gets rejected, daemon logs `peer reply failed: conversation … is done`. The writer's actual output is still on disk in the volume.
+`peer_call` (added alongside this demo) closes that gap. It registers an awaiter for `(to, conv_id)` BEFORE issuing the outbound `peer_send`, then blocks the coordinator's react turn on a channel that the runner's peer-router goroutine fills when the matching reply arrives. The coordinator's task doesn't `task.Reply` until the writer's payload is in hand — so the conversation stays `active` long enough for the round-2 reply to land in the transcript, and the LLM gets the writer's output as a tool result it can include in the final answer.
 
-Both cases produce a real `design.md` in the volume — that's the demo's load-bearing artifact. To deterministically get the reply back into the transcript, the runner would need a synchronous `peer_call` tool that blocks the coordinator's react loop until the writer replies. That's a v2 feature; see `ARCHITECTURE.md` § "Auto-hire 与配额 carve".
+Caveat: the awaiter has a 60s default timeout (`timeout_seconds` in args, max 300s). A pathologically slow downstream still fails the call rather than blocking forever — at which point the coordinator can fall back to `peer_send` (one-way) and let the result reach the user via the volume.
 
 ## Troubleshooting
 
