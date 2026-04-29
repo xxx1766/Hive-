@@ -1,0 +1,35 @@
+# paper-coordinator demo — auto-hire-junior in action
+#
+# Hires only the manager-rank coordinator. The coordinator itself, while
+# processing the conversation, calls hire_junior to spawn paper-writer as
+# a subordinate at runtime — that's what this demo shows.
+#
+# Prereqs (one-time):
+#   ./bin/hive build ./examples/paper-assistant/coordinator
+#   ./bin/hive build ./examples/paper-assistant/writer        # coordinator hires this
+#   ./bin/hive volume create paper-osdi-corpus
+#   ./bin/hive volume create paper-osdi-draft
+#   cp examples/paper-assistant-osdi/sample-corpus/*.md $HIVE_STATE/volumes/paper-osdi-corpus/
+#
+# Run:
+#   ROOM=$(./bin/hive hire -f hivefiles/paper-assistant/coordinator-demo.yaml)
+#   # Open http://127.0.0.1:8910 → "+ New Conversation"
+#   #   target: paper-coordinator
+#   #   input:  {"section": "design"}
+#
+# See examples/paper-assistant/coordinator/README.md for the full walkthrough
+# and the v1 peer-reply limitation caveat.
+room: paper-coordinator-demo
+entry: paper-coordinator
+agents:
+  - image: paper-coordinator:0.1.0
+    rank: manager
+    model: openai/gpt-5.4-mini
+    quota:
+      # 80k = ~30k for the coordinator's own LLM calls + 30k carved off
+      # to the hired paper-writer (see SKILL.md), with headroom.
+      tokens:
+        "openai/gpt-5.4-mini": 80000
+    volumes:
+      - {name: paper-osdi-corpus, mode: ro, mountpoint: /shared/corpus}
+      - {name: paper-osdi-draft,  mode: rw, mountpoint: /shared/draft}

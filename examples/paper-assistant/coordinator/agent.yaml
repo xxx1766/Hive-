@@ -1,0 +1,20 @@
+name: paper-coordinator
+version: 0.1.0
+kind: skill
+skill: SKILL.md
+# Default model — overridden by Hivefile or `hive hire --model`. The
+# coordinator's own LLM usage is light (one read + decide-who-to-hire);
+# we set a small generic default and let the user pin a real model.
+model: gpt-4o-mini
+# manager rank is the minimum that grants HireAllowed=true. Coordinator
+# must be manager+ for `hire_junior` to be authorised — see rank.CanHire.
+rank: manager
+# tools: needs hire to call hire_junior, peer to delegate, fs+llm for
+# its own reasoning over the corpus.
+tools: [fs, llm, peer, hire]
+capabilities:
+  requires: [fs, llm]
+  provides: [paper-coordination]
+quota:
+  tokens:
+    "gpt-4o-mini": 30000
