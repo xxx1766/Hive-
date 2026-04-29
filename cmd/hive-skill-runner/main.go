@@ -38,6 +38,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/anne-x/hive/internal/runners"
@@ -257,6 +258,36 @@ func react(ctx context.Context, a *hive.Agent, system, model string, tools []str
 			continue
 		}
 
+		// peer_call_many is the parallel fan-out variant: register N
+		// awaiters upfront (the awaiter registry is keyed by
+		// (from, conv_id) — different `to` peers don't collide), then
+		// spawn N goroutines that each PeerSend and await their reply.
+		// Total wall-time = max(individual call), not sum. Returns one
+		// result per call in the original order, so the LLM can match
+		// reply i to call i without re-keying.
+		//
+		// Used when a coordinator needs feedback from multiple
+		// subordinates (e.g. supervisor → reviewer-A + reviewer-B
+		// concurrently) and wants both reviews in the transcript before
+		// it produces a final aggregated answer.
+		if parsed.Tool == "peer_call_many" {
+			result, terr := dispatchPeerCallMany(ctx, a, parsed.Args, convID, aw)
+			if terr != nil {
+				a.Log("error", "tool failed", map[string]any{"tool": "peer_call_many", "err": terr.Error()})
+				msgs = append(msgs, hive.LLMMessage{
+					Role:    "user",
+					Content: fmt.Sprintf("tool peer_call_many failed: %s", terr.Error()),
+				})
+				continue
+			}
+			a.Log("info", "tool ok", map[string]any{"tool": "peer_call_many"})
+			msgs = append(msgs, hive.LLMMessage{
+				Role:    "user",
+				Content: fmt.Sprintf("tool peer_call_many returned: %s", runners.ResultText(result, toolResultCap)),
+			})
+			continue
+		}
+
 		result, terr := runners.DispatchTool(ctx, a, parsed.Tool, parsed.Args)
 		if terr != nil {
 			a.Log("error", "tool failed", map[string]any{"tool": parsed.Tool, "err": terr.Error()})
@@ -408,6 +439,10 @@ func buildSystemPrompt(skill string, tools []string) string {
 			`Sends the message AND waits for the target's peer_send reply (matched by from-name + conv_id), then returns the reply payload as the tool result so you can include it in your final answer. ` +
 			`Default timeout 60s, max 300s. Only works inside a Conversation (needs conv_id to route the reply). ` +
 			`This is the right tool for delegate-and-integrate patterns: hire_junior a worker, peer_call them with the task, weave their output into your answer.` + "\n")
+		b.WriteString(`Tool: peer_call_many — args {"calls": [{"to": string, "payload": any}, ...], "timeout_seconds"?: int}; PARALLEL fan-out variant. ` +
+			`Issues all peer_calls concurrently and returns once every reply (or timeout) is in. Wall-clock = max(individual reply time), not sum. ` +
+			`Returns {"replies": [{"to": string, "ok": bool, "from"?: string, "payload"?: any, "error"?: string}]} in the same order as calls. ` +
+			`Use it when you need feedback from N independent subordinates on the same artifact (e.g. supervisor → critic-A + critic-B reviewing the same draft).` + "\n")
 	}
 	if containsAny(tools, []string{runners.GroupMemory}) {
 		b.WriteString(`Tool: memory_put  — args {"scope": string, "key": string, "value": string}; scope="" is Room-private, scope="<volume>" is cross-Room` + "\n")
@@ -499,6 +534,110 @@ func dispatchPeerCall(ctx context.Context, a *hive.Agent, args map[string]any, c
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// dispatchPeerCallMany implements parallel fan-out — peer_call to N
+// peers concurrently, await all replies (or timeouts) in one shot.
+// Args: {"calls": [{"to": <image>, "payload": <any>}, ...],
+//        "timeout_seconds": <int, optional>}.
+// Returns {"replies": [{"to": …, "ok": bool, "from"?, "payload"?, "error"?}]}
+// in the original `calls` order so the LLM can pair replies to requests
+// without keying.
+func dispatchPeerCallMany(ctx context.Context, a *hive.Agent, args map[string]any, convID string, aw *peerAwaiter) (any, error) {
+	if convID == "" {
+		return nil, fmt.Errorf("peer_call_many: no conv_id in scope")
+	}
+	rawCalls, _ := args["calls"].([]any)
+	if len(rawCalls) == 0 {
+		return nil, fmt.Errorf("peer_call_many: calls is required and must be a non-empty list")
+	}
+	timeout := peerCallTimeout
+	if t, ok := args["timeout_seconds"].(float64); ok && t > 0 {
+		d := time.Duration(t) * time.Second
+		if d > peerCallTimeoutCap {
+			d = peerCallTimeoutCap
+		}
+		timeout = d
+	}
+
+	type call struct {
+		to      string
+		payload any
+	}
+	calls := make([]call, 0, len(rawCalls))
+	for i, rc := range rawCalls {
+		obj, ok := rc.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("peer_call_many: calls[%d] not an object", i)
+		}
+		to, _ := obj["to"].(string)
+		if to == "" {
+			return nil, fmt.Errorf("peer_call_many: calls[%d].to is required", i)
+		}
+		calls = append(calls, call{to: to, payload: obj["payload"]})
+	}
+
+	// Register all awaiters synchronously BEFORE any send — guarantees
+	// no reply can race past its own awaiter. The peer-router goroutine
+	// is concurrent with this code, but Register is fast (one mutex op).
+	chans := make([]<-chan *hive.PeerMessage, len(calls))
+	cancels := make([]func(), len(calls))
+	for i, c := range calls {
+		chans[i], cancels[i] = aw.Register(c.to, convID)
+	}
+	defer func() {
+		for _, c := range cancels {
+			c()
+		}
+	}()
+
+	// Fan out: one goroutine per call. Results indexed by i so we
+	// preserve the request order in the response (a tool-result map
+	// with stable indices is much easier for the LLM to reason about).
+	type result struct {
+		To      string `json:"to"`
+		OK      bool   `json:"ok"`
+		From    string `json:"from,omitempty"`
+		Payload any    `json:"payload,omitempty"`
+		Error   string `json:"error,omitempty"`
+	}
+	results := make([]result, len(calls))
+	var wg sync.WaitGroup
+	deadline := time.After(timeout)
+	for i := range calls {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i].To = calls[i].to
+			if err := a.PeerSend(ctx, calls[i].to, calls[i].payload, hive.WithConv(convID)); err != nil {
+				results[i].Error = "send failed: " + err.Error()
+				return
+			}
+			select {
+			case reply, ok := <-chans[i]:
+				if !ok || reply == nil {
+					results[i].Error = "awaiter cancelled before reply"
+					return
+				}
+				results[i].OK = true
+				results[i].From = reply.From
+				// Decode payload back into a generic value so the LLM
+				// sees structured data, not a raw JSON string.
+				var p any
+				if err := json.Unmarshal(reply.Payload, &p); err == nil {
+					results[i].Payload = p
+				} else {
+					results[i].Payload = string(reply.Payload)
+				}
+			case <-deadline:
+				results[i].Error = fmt.Sprintf("timeout after %s waiting for reply from %s", timeout, calls[i].to)
+			case <-ctx.Done():
+				results[i].Error = ctx.Err().Error()
+			}
+		}(i)
+	}
+	wg.Wait()
+	return map[string]any{"replies": results}, nil
 }
 
 // truncatePrefix returns up to n bytes of s, with an ellipsis when cut.

@@ -1,0 +1,37 @@
+# paper-supervisor demo — peer_call_many fan-out across two reviewers.
+#
+# The supervisor (manager) auto-hires paper-reviewer + paper-style-critic
+# at runtime and calls both in parallel via peer_call_many. The two
+# reviewers come back with independent reports (one structural, one
+# prose-style); the supervisor aggregates them.
+#
+# Prereqs (one-time):
+#   ./bin/hive build ./examples/paper-assistant/supervisor
+#   ./bin/hive build ./examples/paper-assistant/style-critic
+#   ./bin/hive build ./examples/paper-assistant/reviewer       # supervisor hires
+#   ./bin/hive volume create paper-osdi-corpus
+#   ./bin/hive volume create paper-osdi-draft
+#   cp examples/paper-assistant-osdi/sample-corpus/*.md $HIVE_STATE/volumes/paper-osdi-corpus/
+#
+# Need design.md to exist before review:
+#   # easiest: run the coordinator demo first to draft it
+#   ./bin/hive hire -f hivefiles/paper-assistant/coordinator-demo.yaml
+#   ... drive a conversation through paper-coordinator, wait for design.md ...
+#
+# Then run THIS demo:
+#   ROOM=$(./bin/hive hire -f hivefiles/paper-assistant/supervisor-demo.yaml)
+#   # UI: target=paper-supervisor, input={"section":"design"}
+room: paper-supervisor-demo
+entry: paper-supervisor
+agents:
+  - image: paper-supervisor:0.1.0
+    rank: manager
+    model: openai/gpt-5.4-mini
+    quota:
+      # Supervisor's own LLM use ≈ 5k tokens. Two carves of 8k each =
+      # 16k. 30k total leaves headroom for retries / longer prompts.
+      tokens:
+        "openai/gpt-5.4-mini": 30000
+    volumes:
+      - {name: paper-osdi-corpus, mode: ro, mountpoint: /shared/corpus}
+      - {name: paper-osdi-draft,  mode: ro, mountpoint: /shared/draft}

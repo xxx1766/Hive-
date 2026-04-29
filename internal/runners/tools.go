@@ -35,7 +35,7 @@ func ToolGroup(tool string) string {
 		return GroupNet
 	case strings.HasPrefix(tool, "fs_"):
 		return GroupFS
-	case tool == "peer_send", tool == "peer_call":
+	case tool == "peer_send", tool == "peer_call", tool == "peer_call_many":
 		return GroupPeer
 	case tool == "llm_complete":
 		return GroupLLM
