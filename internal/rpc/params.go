@@ -222,6 +222,7 @@ type HireJuniorParams struct {
 	Ref     string                 `json:"ref"`              // image ref, e.g. "paper-outline:0.1.0"
 	Rank    string                 `json:"rank"`             // requested rank; daemon enforces strictly < self
 	Tag     string                 `json:"tag,omitempty"`    // UI label; default = image name
+	Name    string                 `json:"name,omitempty"`   // in-room alias; default = image name. Use when hiring two instances of the same image (reviewer-A / reviewer-B).
 	Model   string                 `json:"model,omitempty"`  // override manifest's default LLM model
 	Quota   *HireJuniorQuota       `json:"quota,omitempty"`  // amounts to carve from parent
 	Volumes []HireJuniorVolumeMount `json:"volumes,omitempty"`
@@ -243,12 +244,17 @@ type HireJuniorVolumeMount struct {
 	Mountpoint string `json:"mountpoint"`
 }
 
-// HireJuniorResult tells the caller the resolved image name (so the
-// caller can `peer_send` to it) and the parent for audit / logs.
+// HireJuniorResult tells the caller the resolved in-room name (so the
+// caller can `peer_send` to it), the underlying image, and the parent
+// for audit / logs.
 type HireJuniorResult struct {
-	ImageName string `json:"image_name"` // e.g. "paper-outline"
+	// Name is the in-room identity — what to pass as `to:` in peer_send
+	// / peer_call. Defaults to ImageName but may be a custom alias when
+	// the request had a non-empty `name:` field.
+	Name      string `json:"name"`
+	ImageName string `json:"image_name"`
 	Rank      string `json:"rank"`
-	Parent    string `json:"parent"` // caller's image name
+	Parent    string `json:"parent"`
 }
 
 // ── Agent → Hive: task termination ────────────────────────────────────────

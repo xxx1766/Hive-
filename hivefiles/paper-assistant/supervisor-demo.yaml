@@ -1,14 +1,13 @@
-# paper-supervisor demo — peer_call_many fan-out across two reviewers.
+# paper-supervisor demo — peer_call_many fan-out + Member-name aliasing.
 #
-# The supervisor (manager) auto-hires paper-reviewer + paper-style-critic
-# at runtime and calls both in parallel via peer_call_many. The two
-# reviewers come back with independent reports (one structural, one
-# prose-style); the supervisor aggregates them.
+# The supervisor (manager) auto-hires TWO instances of paper-reviewer:0.1.0
+# at runtime under distinct aliases (reviewer-anti-pattern, reviewer-style),
+# calls both in parallel via peer_call_many, and aggregates the two
+# (focus-nudged) reports into one.
 #
 # Prereqs (one-time):
 #   ./bin/hive build ./examples/paper-assistant/supervisor
-#   ./bin/hive build ./examples/paper-assistant/style-critic
-#   ./bin/hive build ./examples/paper-assistant/reviewer       # supervisor hires
+#   ./bin/hive build ./examples/paper-assistant/reviewer       # both aliases run this image
 #   ./bin/hive volume create paper-osdi-corpus
 #   ./bin/hive volume create paper-osdi-draft
 #   cp examples/paper-assistant-osdi/sample-corpus/*.md $HIVE_STATE/volumes/paper-osdi-corpus/

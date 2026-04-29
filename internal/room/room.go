@@ -35,7 +35,20 @@ const (
 )
 
 // Member tracks a hired Agent within a Room.
+//
+// Name is the in-room identity — the key in r.members, the router
+// register key, the quota Agent field, the log filename, the value of
+// peer/send `to:` and so on. It defaults to Image.Name during Hire,
+// and can be overridden at hire time (via HireOpts.Name) so the same
+// image can be hired multiple times with distinct aliases (e.g.
+// reviewer-A and reviewer-B both running paper-reviewer:0.1.0).
+//
+// Image stays the manifest reference (name + version of the bytes on
+// disk) — the same Image can underpin many Members with different
+// Names. Don't conflate them: error messages may want "image X"
+// (debug context), the rest of the daemon wants "member N".
 type Member struct {
+	Name  string
 	Image image.Ref
 	Rank  *rank.Rank
 	// Model, when non-empty, overrides the manifest's default LLM model
@@ -233,11 +246,16 @@ type HireOpts struct {
 	// the Agent exits so ownership is unambiguous.
 	LogFile  io.WriteCloser
 	ExtraEnv []string
-	// Parent is the image name of the auto-hiring Agent. Empty for
+	// Parent is the in-room name of the auto-hiring Agent. Empty for
 	// top-level hires (CLI / Hivefile). Threaded onto Member so the
 	// daemon can serialise the subordinate tree for restart recovery
 	// and surface it to UI / audit.
 	Parent string
+	// Name overrides the default in-room identity (which defaults to
+	// img.Manifest.Name). Empty ⇒ use the image name. Set when an
+	// auto-hiring caller wants two instances of the same image to
+	// coexist as e.g. "reviewer-A" / "reviewer-B".
+	Name string
 }
 
 // Hire spawns an Agent process and attaches it to this Room.
@@ -249,10 +267,19 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 	rk := opts.Rank
 	logFile := opts.LogFile
 	extraEnv := opts.ExtraEnv
+
+	// Member name defaults to the image name; HireOpts.Name lets the
+	// daemon plumb in an alias (e.g. reviewer-A / reviewer-B for two
+	// instances of paper-reviewer:0.1.0). Once set, this is the
+	// in-room identity for routing, quota, and log files.
+	name := opts.Name
+	if name == "" {
+		name = img.Manifest.Name
+	}
 	r.mu.Lock()
-	if _, dup := r.members[img.Manifest.Name]; dup {
+	if _, dup := r.members[name]; dup {
 		r.mu.Unlock()
-		return nil, fmt.Errorf("agent %s already hired in room %s", img.Manifest.Name, r.ID)
+		return nil, fmt.Errorf("agent %s already hired in room %s", name, r.ID)
 	}
 	r.mu.Unlock()
 
@@ -262,7 +289,12 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 	}
 	env := append(os.Environ(),
 		"HIVE_ROOM_ID="+r.ID,
+		// HIVE_AGENT_IMAGE keeps the manifest name (the bytes-on-disk
+		// identity) — useful for the agent to know what it is. The new
+		// HIVE_AGENT_NAME carries the in-room identity for any agent
+		// that wants to use it (e.g. logging "I am reviewer-A").
 		"HIVE_AGENT_IMAGE="+img.Manifest.Name,
+		"HIVE_AGENT_NAME="+name,
 	)
 	env = append(env, extraEnv...)
 	cmd.Env = env
@@ -272,9 +304,10 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 		cmd.Stderr = os.Stderr
 	}
 
-	conn := agent.New(img.Manifest.Name, cmd, initErrPipe)
+	conn := agent.New(name, cmd, initErrPipe)
 
 	member := &Member{
+		Name:          name,
 		Image:         img.Ref(),
 		Rank:          rk,
 		Model:         opts.Model,
@@ -309,12 +342,12 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 	}
 
 	r.mu.Lock()
-	r.members[img.Manifest.Name] = member
+	r.members[name] = member
 	r.mu.Unlock()
-	r.router.Register(img.Manifest.Name, conn)
+	r.router.Register(name, conn)
 
 	if r.Hooks.OnStatus != nil {
-		r.Hooks.OnStatus("agent_spawned", img.Manifest.Name, map[string]any{"rank": rk.Name})
+		r.Hooks.OnStatus("agent_spawned", name, map[string]any{"rank": rk.Name, "image": img.Manifest.Name})
 	}
 
 	// Reap when the Agent exits. cmd.Wait (inside conn.waitLoop) has
@@ -323,9 +356,9 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 	// before the close hits.
 	go func() {
 		<-conn.Done()
-		r.router.Unregister(img.Manifest.Name)
+		r.router.Unregister(name)
 		r.mu.Lock()
-		delete(r.members, img.Manifest.Name)
+		delete(r.members, name)
 		r.mu.Unlock()
 		if logFile != nil {
 			_ = logFile.Close()
@@ -338,11 +371,11 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 			r.Hooks.OnAgentExit(r, member)
 		}
 		if r.Hooks.OnStatus != nil {
-			info := map[string]any{}
+			info := map[string]any{"image": img.Manifest.Name}
 			if err := conn.ExitErr(); err != nil {
 				info["error"] = err.Error()
 			}
-			r.Hooks.OnStatus("agent_exited", img.Manifest.Name, info)
+			r.Hooks.OnStatus("agent_exited", name, info)
 		}
 	}()
 
@@ -450,7 +483,7 @@ func (r *Room) installCoreHandlers(m *Member) {
 	m.Conn.Handle(rpc.MethodLog, func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p rpc.LogParams
 		if err := json.Unmarshal(params, &p); err == nil && r.Hooks.OnLog != nil {
-			r.Hooks.OnLog(m.Image.Name, p)
+			r.Hooks.OnLog(m.Name, p)
 		}
 		return struct{}{}, nil
 	})
@@ -464,15 +497,15 @@ func (r *Room) installCoreHandlers(m *Member) {
 		// Both are no-ops when the daemon hasn't installed them or when
 		// p.ConvID == "" (peer messages outside any Conversation).
 		if r.Hooks.PeerSendIntercept != nil {
-			if err := r.Hooks.PeerSendIntercept(r, m.Image.Name, p.To, p.ConvID, p.Payload); err != nil {
+			if err := r.Hooks.PeerSendIntercept(r, m.Name, p.To, p.ConvID, p.Payload); err != nil {
 				return nil, err
 			}
 		}
-		if err := r.router.Send(ctx, m.Image.Name, p.To, p.ConvID, p.Payload); err != nil {
+		if err := r.router.Send(ctx, m.Name, p.To, p.ConvID, p.Payload); err != nil {
 			return nil, err
 		}
 		if r.Hooks.PeerSendDelivered != nil {
-			r.Hooks.PeerSendDelivered(r, m.Image.Name, p.To, p.ConvID, p.Payload)
+			r.Hooks.PeerSendDelivered(r, m.Name, p.To, p.ConvID, p.Payload)
 		}
 		return struct{}{}, nil
 	})

@@ -86,11 +86,15 @@ type RoomDetail struct {
 
 // RoomMember mirrors the team-member view but shaped for the HTTP UI.
 type RoomMember struct {
+	// Name is the in-room identity (defaults to ImageName, possibly
+	// aliased on hire_junior — see hire/junior IPC). UI uses Name as
+	// the row label and falls back to ImageName when they're equal.
+	Name      string         `json:"name"`
 	ImageName string         `json:"image"`
 	Rank      string         `json:"rank"`
 	State     string         `json:"state"`
 	Model     string         `json:"model,omitempty"`
-	// Parent is the image name of the auto-hiring Agent (empty for
+	// Parent is the in-room name of the auto-hiring Agent (empty for
 	// top-level CLI / Hivefile hires). UI uses it to render the
 	// subordinate tree.
 	Parent  string         `json:"parent,omitempty"`

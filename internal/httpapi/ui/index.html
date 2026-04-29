@@ -447,13 +447,17 @@ document.getElementById('timeline-close-btn').onclick = () => {
 // ── New conversation modal ────────────────────────────────────────
 document.getElementById('new-conv-btn').onclick = () => {
   if (!state.currentRoom) return;
-  // Populate target agent dropdown.
+  // Populate target agent dropdown. Use Name (in-room identity) since
+  // that's what conversation/create's `target:` field expects; show
+  // image in parens when distinct so the user sees the lineage.
   const sel = document.getElementById('nc-target');
   sel.innerHTML = '';
   for (const m of (state.currentRoom.members || [])) {
     const opt = document.createElement('option');
-    opt.value = m.image;
-    opt.textContent = `${m.image}  [${m.rank}]`;
+    const nm = m.name || m.image;
+    opt.value = nm;
+    const aliasNote = (m.name && m.name !== m.image) ? ` (${m.image})` : '';
+    opt.textContent = `${nm}${aliasNote}  [${m.rank}]`;
     sel.appendChild(opt);
   }
   document.getElementById('new-conv-modal').classList.remove('hidden');
@@ -598,33 +602,35 @@ function renderTeam() {
   if (!state.currentRoom) return;
 
   const members = state.currentRoom.members || [];
-  // Index members by image name for O(1) lookup.
+  // Index members by Name (in-room identity) for O(1) lookup. Aliased
+  // members and same-image collisions are handled correctly because
+  // Name is unique within the room.
   const byName = {};
-  for (const m of members) byName[m.image] = m;
+  for (const m of members) byName[m.name || m.image] = m;
 
-  // Group children by parent; top-level (no parent) under "".
+  // Group children by parent (the parent is also a Name, not an image).
+  // Top-level members (no parent) go under "".
   const childrenOf = {};
   for (const m of members) {
     const p = m.parent || '';
     (childrenOf[p] = childrenOf[p] || []).push(m);
   }
 
-  // Stable tree DFS, rendering rows in depth order.
   const seen = new Set();
-  function emit(image, depth) {
-    if (seen.has(image)) return; // cycle guard (shouldn't happen — daemon enforces tree)
-    seen.add(image);
-    const m = byName[image];
+  function emit(name, depth) {
+    if (seen.has(name)) return; // cycle guard
+    seen.add(name);
+    const m = byName[name];
     if (!m) return;
     tbody.appendChild(teamRow(m, depth));
-    for (const c of (childrenOf[image] || [])) emit(c.image, depth + 1);
+    for (const c of (childrenOf[name] || [])) emit(c.name || c.image, depth + 1);
   }
-  for (const top of (childrenOf[''] || [])) emit(top.image, 0);
+  for (const top of (childrenOf[''] || [])) emit(top.name || top.image, 0);
 
-  // Safety net: if any member somehow wasn't reachable from the root
-  // (e.g. orphan parent reference after a rank rename), still render.
+  // Safety net: orphan parent reference still gets a row.
   for (const m of members) {
-    if (!seen.has(m.image)) tbody.appendChild(teamRow(m, 0));
+    const k = m.name || m.image;
+    if (!seen.has(k)) tbody.appendChild(teamRow(m, 0));
   }
 }
 
@@ -648,8 +654,12 @@ function teamRow(m, depth) {
   const indent = depth > 0
     ? `<span class="text-slate-300 font-mono">${'│ '.repeat(depth-1)}└─ </span>`
     : '';
+  // Display: bold member-name (aliased or =image), faint image-name in
+  // parens when distinct so an alias is visually obvious.
+  const name = m.name || m.image;
+  const aliasNote = (m.name && m.name !== m.image) ? ` <span class="text-[10px] text-slate-400 ml-1">(${escapeHtml(m.image)})</span>` : '';
   tr.innerHTML = `
-    <td class="px-3 py-2">${indent}<b style="color:${colorFor(m.image)}">${escapeHtml(m.image)}</b>${m.parent ? ` <span class="text-[10px] text-slate-400 ml-1">(hired by ${escapeHtml(m.parent)})</span>` : ''}</td>
+    <td class="px-3 py-2">${indent}<b style="color:${colorFor(name)}">${escapeHtml(name)}</b>${aliasNote}${m.parent ? ` <span class="text-[10px] text-slate-400 ml-1">(hired by ${escapeHtml(m.parent)})</span>` : ''}</td>
     <td class="px-3 py-2 text-xs">${escapeHtml(m.rank)}</td>
     <td class="px-3 py-2 text-xs font-mono">${escapeHtml(m.model || '(default)')}</td>
     <td class="px-3 py-2 text-xs">${escapeHtml(vols)}</td>

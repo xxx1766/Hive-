@@ -1,25 +1,25 @@
-# paper-supervisor — `peer_call_many` fan-out demo
+# paper-supervisor — `peer_call_many` fan-out + alias demo
 
-Showcases Hive's parallel-fan-out pattern: a manager-rank coordinator hires **two distinct specialist reviewers** at runtime, calls **both concurrently** via `peer_call_many`, and aggregates their feedback into one report.
+Showcases two Hive features together:
 
-The architectural claim: the awaiter registry in skill-runner is keyed by `(from, conv_id)` — two awaiters with different `from` peers cohabit the registry and are dispatched independently when their replies arrive. `peer_call_many` exercises this directly.
+1. **Parallel fan-out** — a manager-rank coordinator calls N peers concurrently via `peer_call_many`. Awaiter registry holds N entries keyed by `(from, conv_id)`, each goroutine dispatches its own reply.
+2. **Member-name aliasing** — both peers run the **same image** (`paper-reviewer:0.1.0`) but get distinct in-room aliases (`reviewer-anti-pattern`, `reviewer-style`). Daemon dedups by `Member.Name`, not `Image.Name`, so `hire_junior --name <alias>` lets one image be hired N times.
 
 ## What you'll see
 
 | Surface | What appears |
 |---|---|
 | HTTP UI kanban | One conversation, planned → active → done in ~max(reviewer time), not sum. With two ~30s reviewers, ~30s total (vs 60s if you'd called them sequentially). |
-| Timeline view | `hire_junior paper-reviewer`, `hire_junior paper-style-critic`, `peer_call_many → [paper-reviewer, paper-style-critic]` (two outbound peer hops, rounds 1 & 2), then two inbound reply peers (rounds 3 & 4). |
-| Team tab | Subordinate tree: `paper-supervisor` with two children `└─ paper-reviewer (hired by paper-supervisor)` and `└─ paper-style-critic (hired by paper-supervisor)`. |
-| Final answer | Aggregated report mentioning both `structural_issues` (from paper-reviewer) and `style_issues` (from paper-style-critic). |
+| Timeline view | `hire_junior paper-reviewer:0.1.0 name=reviewer-anti-pattern`, `hire_junior paper-reviewer:0.1.0 name=reviewer-style`, `peer_call_many` → two concurrent outbound peers (rounds 1 & 2), then two inbound replies (rounds 3 & 4). |
+| Team tab | Subordinate tree: `paper-supervisor` with two children `└─ reviewer-anti-pattern (paper-reviewer)` and `└─ reviewer-style (paper-reviewer)` — both running the same image but distinguished by alias. |
+| Final answer | Aggregated report quoting both reviewers; the LLM uses the focus hint each was given to nudge them into complementary angles. |
 
 ## Setup
 
 ```bash
 make build
 ./bin/hive build ./examples/paper-assistant/supervisor
-./bin/hive build ./examples/paper-assistant/style-critic
-./bin/hive build ./examples/paper-assistant/reviewer
+./bin/hive build ./examples/paper-assistant/reviewer       # both aliases run this image
 
 ./bin/hive volume create paper-osdi-corpus
 ./bin/hive volume create paper-osdi-draft
@@ -63,15 +63,15 @@ For two ~30s reviewers, that's 30s vs 60s — meaningful when the supervisor pat
 After a clean run, the conversation has 6 messages:
 
 ```
-m1  round 0  task_input    creator → paper-supervisor               {"section":"design"}
-m2  round 1  peer          paper-supervisor → paper-reviewer        {"section":"design"}
-m3  round 2  peer          paper-supervisor → paper-style-critic    {"section":"design"}
-m4  round 3  peer          paper-reviewer → paper-supervisor        {answer: {...checklist findings...}}
-m5  round 4  peer          paper-style-critic → paper-supervisor    {answer: {style_issues, tone, score}}
-m6  round —  task_output   paper-supervisor → -                     {answer: aggregated report}
+m1  round 0  task_input    creator → paper-supervisor                  {"section":"design"}
+m2  round 1  peer          paper-supervisor → reviewer-anti-pattern    {"section":"design", "focus":"anti-patterns ..."}
+m3  round 2  peer          paper-supervisor → reviewer-style           {"section":"design", "focus":"voice ..."}
+m4  round 3  peer          reviewer-anti-pattern → paper-supervisor    {answer: "...findings..."}
+m5  round 4  peer          reviewer-style → paper-supervisor           {answer: "...findings..."}
+m6  round —  task_output   paper-supervisor → -                        {answer: aggregated report}
 ```
 
-m2 and m3 may be in either order (both are sent in concurrent goroutines). m4 and m5 likewise — order reflects which reviewer's LLM finished first. The transcript ordering is by daemon receipt time, not by call order — that's correct for "what happened in the room" semantics.
+`from`/`to` show the **alias**, not the image — both reviewers are running `paper-reviewer:0.1.0` but addressable by their distinct names. m2/m3 may be in either order (concurrent goroutines); same for m4/m5 (whoever's LLM finished first arrives first).
 
 ## Troubleshooting
 

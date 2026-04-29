@@ -314,6 +314,11 @@ func (a *Agent) FSList(ctx context.Context, path string) ([]FSEntry, error) {
 type HireJuniorOpts struct {
 	// Tag is a UI label; defaults to the image name when empty.
 	Tag string
+	// Name is the in-room identity for the new subordinate. Defaults
+	// to the image name. Set this to a unique alias when hiring two
+	// instances of the same image (e.g. "reviewer-A" and "reviewer-B"
+	// both running paper-reviewer:0.1.0).
+	Name string
 	// Model overrides the manifest's default LLM model (HIVE_MODEL env).
 	Model string
 	// Quota tokens / api_calls carved out of the caller's remaining
@@ -359,6 +364,9 @@ func (a *Agent) HireJunior(ctx context.Context, ref, rank string, opts ...HireJu
 	if o.Tag != "" {
 		args["tag"] = o.Tag
 	}
+	if o.Name != "" {
+		args["name"] = o.Name
+	}
 	if o.Model != "" {
 		args["model"] = o.Model
 	}
@@ -376,6 +384,7 @@ func (a *Agent) HireJunior(ctx context.Context, ref, rank string, opts ...HireJu
 		args["volumes"] = vols
 	}
 	var res struct {
+		Name      string `json:"name"`
 		ImageName string `json:"image_name"`
 		Rank      string `json:"rank"`
 		Parent    string `json:"parent"`
@@ -383,7 +392,9 @@ func (a *Agent) HireJunior(ctx context.Context, ref, rank string, opts ...HireJu
 	if err := a.call(ctx, "hire/junior", args, &res); err != nil {
 		return "", err
 	}
-	return res.ImageName, nil
+	// Return the in-room name (defaults to image name when no alias).
+	// Caller uses this as `to:` for subsequent peer_send / peer_call.
+	return res.Name, nil
 }
 
 // PeerSend delivers a message to another Agent in the same Room. Pass

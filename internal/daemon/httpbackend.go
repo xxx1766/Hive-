@@ -63,6 +63,7 @@ func (b *httpBackend) RoomDetail(roomID string) (httpapi.RoomDetail, bool) {
 			}
 		}
 		out.Members = append(out.Members, httpapi.RoomMember{
+			Name:      m.Name,
 			ImageName: m.Image.Name,
 			Rank:      m.Rank.Name,
 			State:     "running",

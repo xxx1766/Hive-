@@ -222,16 +222,18 @@ func (d *Daemon) isShuttingDown() bool {
 // Conn at hire time. Proxies enforce Rank and consume quota through the
 // single quota.Actor; connection pooling for HTTP is hidden in netproxy.
 func (d *Daemon) installAgentProxies(r *room.Room, m *room.Member) {
-	// Install the merged (Rank default + override) quota.
+	// Install the merged (Rank default + override) quota. Quota keys
+	// use m.Name (the in-room identity) so two members of the same
+	// image don't share buckets — that's the entire point of aliasing.
 	eff := m.EffectiveQuota()
 	for k, v := range eff.Tokens {
 		_, _ = d.quota.SetLimit(d.quotaCtx, quota.Key{
-			RoomID: r.ID, Agent: m.Image.Name, Resource: "tokens:" + k,
+			RoomID: r.ID, Agent: m.Name, Resource: "tokens:" + k,
 		}, v)
 	}
 	for k, v := range eff.APICalls {
 		_, _ = d.quota.SetLimit(d.quotaCtx, quota.Key{
-			RoomID: r.ID, Agent: m.Image.Name, Resource: k,
+			RoomID: r.ID, Agent: m.Name, Resource: k,
 		}, v)
 	}
 
@@ -265,18 +267,18 @@ func (d *Daemon) installAgentProxies(r *room.Room, m *room.Member) {
 		return len(fsMounts[i].AgentPath) > len(fsMounts[j].AgentPath)
 	})
 	fs := &fsproxy.Proxy{RoomRootfs: r.Rootfs, Rank: fsRank, Mounts: fsMounts}
-	net := &netproxy.Proxy{RoomID: r.ID, AgentName: m.Image.Name, Rank: m.Rank, Quota: d.quota}
-	llm := &llmproxy.Proxy{RoomID: r.ID, AgentName: m.Image.Name, Rank: m.Rank, Quota: d.quota, Provider: d.llmProvider}
+	net := &netproxy.Proxy{RoomID: r.ID, AgentName: m.Name, Rank: m.Rank, Quota: d.quota}
+	llm := &llmproxy.Proxy{RoomID: r.ID, AgentName: m.Name, Rank: m.Rank, Quota: d.quota, Provider: d.llmProvider}
 	mem := &memproxy.Proxy{
 		RoomID:    r.ID,
-		AgentName: m.Image.Name,
+		AgentName: m.Name,
 		Rank:      m.Rank,
 		Volumes:   d.volumes,
 		RoomsDir:  ipc.RoomsDir(),
 	}
 	evt := &eventproxy.Proxy{
 		RoomID:    r.ID,
-		AgentName: m.Image.Name,
+		AgentName: m.Name,
 		Rank:      m.Rank,
 		Volumes:   d.volumes,
 		Bus:       d.events,
@@ -284,7 +286,7 @@ func (d *Daemon) installAgentProxies(r *room.Room, m *room.Member) {
 	}
 	ait := &aitoolproxy.Proxy{
 		RoomID:    r.ID,
-		AgentName: m.Image.Name,
+		AgentName: m.Name,
 		Rank:      m.Rank,
 		Quota:     d.quota,
 		Provider:  d.aiToolProvider,
@@ -591,6 +593,7 @@ func (d *Daemon) handleRoomTeam(ctx context.Context, params json.RawMessage, _ i
 	out := make([]ipc.TeamMember, 0, len(mems))
 	for _, m := range mems {
 		out = append(out, ipc.TeamMember{
+			Name:      m.Name,
 			ImageName: m.Image.Name,
 			Rank:      m.Rank.Name,
 			State:     "running",
@@ -704,7 +707,7 @@ func (d *Daemon) remainingQuota(roomID string, m *room.Member) map[string]any {
 	eff := m.EffectiveQuota()
 	for k := range eff.Tokens {
 		res, err := d.quota.Remaining(d.quotaCtx, quota.Key{
-			RoomID: roomID, Agent: m.Image.Name, Resource: "tokens:" + k,
+			RoomID: roomID, Agent: m.Name, Resource: "tokens:" + k,
 		})
 		if err == nil && !res.Unlimited {
 			out["tokens:"+k] = res.Remaining
@@ -712,7 +715,7 @@ func (d *Daemon) remainingQuota(roomID string, m *room.Member) map[string]any {
 	}
 	for k := range eff.APICalls {
 		res, err := d.quota.Remaining(d.quotaCtx, quota.Key{
-			RoomID: roomID, Agent: m.Image.Name, Resource: k,
+			RoomID: roomID, Agent: m.Name, Resource: k,
 		})
 		if err == nil && !res.Unlimited {
 			out[k] = res.Remaining
@@ -747,6 +750,7 @@ func (d *Daemon) handleAgentHire(ctx context.Context, params json.RawMessage, _ 
 	d.persistRoom(r)
 	return ipc.AgentHireResult{
 		Member: ipc.TeamMember{
+			Name:      m.Name,
 			ImageName: m.Image.Name,
 			Rank:      m.Rank.Name,
 			State:     "running",
@@ -763,10 +767,14 @@ type hireConfig struct {
 	Model     string // overrides manifest.Model (HIVE_MODEL); empty ⇒ keep manifest's
 	QuotaOver json.RawMessage
 	Volumes   []ipc.VolumeMountRef
-	// Parent is the auto-hiring Agent's image name (empty ⇒ top-level
-	// CLI / Hivefile hire). Threaded through to room.Member so the
+	// Parent is the auto-hiring Agent's name (empty ⇒ top-level CLI /
+	// Hivefile hire). Threaded through to room.Member so the
 	// subordinate tree survives daemon restart via roomstate.MemberSnap.
 	Parent string
+	// Name is the in-room identity for this hire (overrides
+	// img.Manifest.Name). Empty ⇒ use the image name. Allows the same
+	// image to be hired multiple times under distinct aliases.
+	Name string
 }
 
 // hireFromConfig is the single entry point that turns a hireConfig into
@@ -797,11 +805,19 @@ func (d *Daemon) hireFromConfig(r *room.Room, cfg hireConfig) (*room.Member, err
 					rk.Name, req, img.Manifest.Capabilities.Requires))
 		}
 	}
+	// Resolve the in-room name early — it drives the log filename so
+	// the OS-level file collision (two members of the same image
+	// trying to open the same .stderr.log) is avoided in the alias
+	// case.
+	memberName := cfg.Name
+	if memberName == "" {
+		memberName = img.Manifest.Name
+	}
 	// Per-agent stderr log for easier debugging. Capped + rotated so
 	// long-running Agents don't fill the disk (see logrotate.go). Declared
 	// as the interface type so an open failure leaves logFile as a real
 	// nil (avoiding the typed-nil trap through HireOpts.LogFile).
-	logPath := filepath.Join(ipc.RoomsDir(), r.ID, "logs", img.Manifest.Name+".stderr.log")
+	logPath := filepath.Join(ipc.RoomsDir(), r.ID, "logs", memberName+".stderr.log")
 	var logFile io.WriteCloser
 	if f, err := openRotatingLog(logPath, logMaxBytes()); err == nil {
 		logFile = f
@@ -872,6 +888,7 @@ func (d *Daemon) hireFromConfig(r *room.Room, cfg hireConfig) (*room.Member, err
 		LogFile:       logFile,
 		ExtraEnv:      extraEnv,
 		Parent:        cfg.Parent,
+		Name:          memberName,
 	})
 	if err != nil {
 		if logFile != nil {
@@ -968,6 +985,17 @@ func (d *Daemon) persistRoom(r *room.Room) {
 	}
 }
 
+// aliasOrEmpty returns name when it differs from imageName, otherwise
+// "". Keeps the on-disk MemberSnap.Name field zero-valued for the
+// common (non-aliased) case so state.json doesn't bloat with redundant
+// data.
+func aliasOrEmpty(name, imageName string) string {
+	if name == imageName {
+		return ""
+	}
+	return name
+}
+
 // snapshotFor builds a Snapshot from the Room's live state. Members are
 // reduced to the wire-form bits hireFromConfig consumes — image ref,
 // rank name, quota override (re-marshalled), volume mounts. Anything
@@ -983,6 +1011,10 @@ func snapshotFor(r *room.Room) *roomstate.Snapshot {
 			Volumes:  m.Volumes,
 			HiredAt:  m.HiredAt,
 			Parent:   m.Parent,
+			// Persist Name only when it differs from the image name —
+			// avoids bloating state.json for the common (top-level
+			// CLI / Hivefile) case where they're identical.
+			Name: aliasOrEmpty(m.Name, m.Image.Name),
 		}
 		if m.QuotaOverride != nil {
 			// Re-encode through the wire shape so on-disk state stays
@@ -997,8 +1029,20 @@ func snapshotFor(r *room.Room) *roomstate.Snapshot {
 		}
 		out = append(out, ms)
 	}
-	// Stable order makes diffs and tests deterministic.
-	sort.Slice(out, func(i, j int) bool { return out[i].Image.Name < out[j].Image.Name })
+	// Stable order makes diffs and tests deterministic. Sort by member
+	// name (the in-room identity) so two members of the same image
+	// have a predictable ordering by their alias.
+	sort.Slice(out, func(i, j int) bool {
+		ai := out[i].Name
+		if ai == "" {
+			ai = out[i].Image.Name
+		}
+		aj := out[j].Name
+		if aj == "" {
+			aj = out[j].Image.Name
+		}
+		return ai < aj
+	})
 	return &roomstate.Snapshot{
 		Version: roomstate.CurrentVersion,
 		Name:    r.Name,
@@ -1044,6 +1088,7 @@ func (d *Daemon) recoverOne(snap roomstate.Loaded) error {
 			QuotaOver: ms.QuotaOver,
 			Volumes:   ms.Volumes,
 			Parent:    ms.Parent,
+			Name:      ms.Name,
 		})
 		if err != nil {
 			log.Printf("hived: recover %s/%s: %v", snap.RoomID, ms.Image.Name, err)

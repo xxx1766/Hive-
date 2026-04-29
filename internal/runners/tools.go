@@ -209,6 +209,7 @@ func DispatchTool(ctx context.Context, a *hive.Agent, name string, args map[stri
 		}
 		opts := hive.HireJuniorOpts{
 			Tag:   getString(args, "tag"),
+			Name:  getString(args, "name"),
 			Model: getString(args, "model"),
 		}
 		if q, ok := args["quota"].(map[string]any); ok {
@@ -230,11 +231,16 @@ func DispatchTool(ctx context.Context, a *hive.Agent, name string, args map[stri
 				})
 			}
 		}
-		image, err := a.HireJunior(ctx, ref, rk, opts)
+		name, err := a.HireJunior(ctx, ref, rk, opts)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"image": image, "rank": rk}, nil
+		// Return the in-room name (defaults to image name when no alias
+		// was set) under both keys for back-compat — older SKILL.md
+		// authors check "image", new ones can use "name". Keep both
+		// pointing at the same value since for the LLM "what to peer_send
+		// to" is the only thing that matters.
+		return map[string]any{"name": name, "image": name, "rank": rk}, nil
 
 	case "llm_complete":
 		model := getString(args, "model")

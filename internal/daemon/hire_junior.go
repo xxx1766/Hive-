@@ -63,7 +63,7 @@ func (d *Daemon) handleHireJunior(ctx context.Context, r *room.Room, parent *roo
 	// rejection the parent's accounting is untouched — install proxies
 	// and quota for the child only after the carve succeeds.
 	if p.Quota != nil {
-		if err := d.carveQuotaFromParent(ctx, r.ID, parent.Image.Name, p.Quota); err != nil {
+		if err := d.carveQuotaFromParent(ctx, r.ID, parent.Name, p.Quota); err != nil {
 			return nil, err
 		}
 	}
@@ -90,7 +90,8 @@ func (d *Daemon) handleHireJunior(ctx context.Context, r *room.Room, parent *roo
 		Model:     p.Model,
 		QuotaOver: childQuotaRaw,
 		Volumes:   convertHireJuniorVolumes(p.Volumes),
-		Parent:    parent.Image.Name,
+		Parent:    parent.Name,
+		Name:      p.Name,
 	}
 	child, err := d.hireFromConfig(r, cfg)
 	if err != nil {
@@ -105,9 +106,10 @@ func (d *Daemon) handleHireJunior(ctx context.Context, r *room.Room, parent *roo
 	d.persistRoom(r)
 
 	return rpc.HireJuniorResult{
+		Name:      child.Name,
 		ImageName: child.Image.Name,
 		Rank:      child.Rank.Name,
-		Parent:    parent.Image.Name,
+		Parent:    parent.Name,
 	}, nil
 }
 
@@ -186,12 +188,12 @@ func (d *Daemon) refundCarvesToParent(roomID string, child *room.Member) {
 	eq := child.EffectiveQuota()
 	for model, _ := range eq.Tokens {
 		resource := "tokens:" + model
-		childKey := quota.Key{RoomID: roomID, Agent: child.Image.Name, Resource: resource}
+		childKey := quota.Key{RoomID: roomID, Agent: child.Name, Resource: resource}
 		parentKey := quota.Key{RoomID: roomID, Agent: child.Parent, Resource: resource}
 		d.refundOneBucket(ctx, childKey, parentKey)
 	}
 	for cat := range eq.APICalls {
-		childKey := quota.Key{RoomID: roomID, Agent: child.Image.Name, Resource: cat}
+		childKey := quota.Key{RoomID: roomID, Agent: child.Name, Resource: cat}
 		parentKey := quota.Key{RoomID: roomID, Agent: child.Parent, Resource: cat}
 		d.refundOneBucket(ctx, childKey, parentKey)
 	}

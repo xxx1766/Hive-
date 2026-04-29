@@ -97,6 +97,12 @@ type RoomTeamParams struct {
 }
 
 type TeamMember struct {
+	// Name is the in-room identity — the key for peer/send routing,
+	// quota accounting, and log files. Defaults to ImageName when no
+	// alias was set at hire time. Two members with the same ImageName
+	// but different Names can coexist (the auto-hire-junior aliasing
+	// path).
+	Name      string         `json:"name"`
 	ImageName string         `json:"image"`
 	Rank      string         `json:"rank"`
 	State     string         `json:"state"`
