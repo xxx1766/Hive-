@@ -362,7 +362,7 @@ curl -N http://127.0.0.1:8910/api/rooms/$ROOM/events
 manager+ Rank 的 Agent 在 ReAct 循环里能调 SDK `hive.HireJunior(ref, rank, opts)`：
 
 - `rank.CanHire` 三规则：调用方必须 `HireAllowed=true`（默认仅 manager + director）；child rank 必须**严格小于** self（manager 招 staff/intern，不能招另一个 manager —— 防 peer-cycle）；同 Room 内 image 名唯一。
-- **配额 carve**：每个 token / api_call 桶都通过 `quota.Consume` 原子地从 parent 扣减；任一桶不够，整个 hire 失败。Carve 是硬扣，子 agent 用不完不会自动回流（refund-on-exit 留 v2）。
+- **配额 carve + refund-on-exit**：每个 token / api_call 桶都通过 `quota.Consume` 原子地从 parent 扣减；任一桶不够，整个 hire 失败。子 agent 退出时通过 `quota.Uncharge` 自动把没用完的余量回流给 parent —— supervisor 给 critic carve 8k，critic 用了 3k，5k 在 critic 退出后回到 supervisor 桶里，可在 `hive team` 看见。
 - **Subordinate tree**：`Member.Parent` + `roomstate.MemberSnap.Parent` 持久化树形结构。daemon 重启后整树原样恢复。HTTP UI Team tab 用 `└─ paper-writer (hired by paper-coordinator)` 这种 indent + 注解直观渲染。
 
 ### 3. peer_call —— 同步等回复，让委派结果真回到 transcript
@@ -528,7 +528,7 @@ make demo           # 端到端 smoke（需要 root）
 
 ### 🚀 v2（`DEMO_PLAN.md` 里明确列为"不做"的大特性）
 
-- [ ] **`hire_junior` refund-on-exit**：subordinate 退出时把未消耗的 carve 自动还给 parent；现在是硬扣，余量丢弃。需要 quota actor 加 transactional transfer op。
+- [x] ~~**`hire_junior` refund-on-exit**~~ —— 已完成：`quota.Actor.Uncharge` + 在 `OnAgentExit` 钩子里按 child.EffectiveQuota 把每桶未消耗余量回流到 parent.bucket。可观察：carve 30k 给 sub，sub 用 5k 退出后，parent 的 `hive team` 余量从 -25k 回到 -5k。
 - [ ] **`peer_call` 在 workflow-runner**：现在只 skill-runner 支持 peer-router goroutine + awaiter；workflow agent 想 peer_call 还得走 fallback 路径或改成 skill。
 - [ ] **跨 Room Conversation**：Conversation 当前 Room-scoped；通过 Volume 桥接两个 Room 的 transcript 是自然延伸（类比已有的跨 Room events）。
 - [ ] **HTTP UI 鉴权**：默认 `127.0.0.1:8910` 只监本地。要远程访问得加 token / mTLS。

@@ -70,6 +70,60 @@ func TestCarveQuotaFromParent(t *testing.T) {
 	}
 }
 
+// TestRefundOneBucket covers the per-bucket refund-on-exit path. Three
+// scenarios: child used some (refund the rest), child used everything
+// (no-op), child key missing entirely (treated as unlimited → no-op).
+func TestRefundOneBucket(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	q := quota.New(0)
+	go q.Run(ctx)
+
+	d := &Daemon{quota: q, quotaCtx: ctx}
+
+	roomID := "R"
+	parentKey := quota.Key{RoomID: roomID, Agent: "manager", Resource: "tokens:gpt"}
+	childKey := quota.Key{RoomID: roomID, Agent: "intern", Resource: "tokens:gpt"}
+
+	// Set up: parent had 1000, carved 600 to child. Parent consumed=600,
+	// remaining=400. Child has its own bucket of 600, consumed 350 (used
+	// some of the carved budget), remaining=250.
+	q.SetLimit(ctx, parentKey, 1000)
+	q.Consume(ctx, parentKey, 600) // simulates carve
+	q.SetLimit(ctx, childKey, 600)
+	q.Consume(ctx, childKey, 350)
+
+	// 1. Child exits with 250 unused → refund 250 to parent.
+	d.refundOneBucket(ctx, childKey, parentKey)
+	res, _ := q.Remaining(ctx, parentKey)
+	if res.Remaining != 650 {
+		t.Errorf("after refund parent.remaining=%d want 650", res.Remaining)
+	}
+
+	// 2. Calling refund again on the same child key (which still has
+	// remaining=250 — we don't reset it) would double-refund. Daemon
+	// only calls refundOneBucket once per exit, so this isn't a real
+	// path; but the behaviour-on-bug is "uncharge clamps at zero".
+	d.refundOneBucket(ctx, childKey, parentKey)
+	res, _ = q.Remaining(ctx, parentKey)
+	if res.Remaining != 900 {
+		t.Errorf("after double-refund parent.remaining=%d want 900 (still <= 1000 limit)", res.Remaining)
+	}
+
+	// 3. Child bucket missing (never had a limit installed) → unlimited
+	// → refund no-ops, parent unchanged. Use a fresh parent key so this
+	// case stands alone independent of the previous mutations.
+	freshParent := quota.Key{RoomID: roomID, Agent: "manager-2", Resource: "tokens:gpt"}
+	q.SetLimit(ctx, freshParent, 1000)
+	q.Consume(ctx, freshParent, 200)
+	missingChild := quota.Key{RoomID: roomID, Agent: "ghost", Resource: "tokens:gpt"}
+	d.refundOneBucket(ctx, missingChild, freshParent)
+	res, _ = q.Remaining(ctx, freshParent)
+	if res.Remaining != 800 {
+		t.Errorf("ghost-child refund mutated parent: remaining=%d want 800", res.Remaining)
+	}
+}
+
 // TestConvertHireJuniorVolumes is a tiny shape-conversion test — exists
 // to lock the field mapping so a future rename in either rpc or ipc
 // surfaces as a compile/test error rather than a silent data loss.

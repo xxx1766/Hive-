@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 
 	"github.com/anne-x/hive/internal/image"
 	"github.com/anne-x/hive/internal/ipc"
@@ -160,6 +161,63 @@ func (d *Daemon) carveQuotaFromParent(ctx context.Context, roomID, parentImage s
 		}
 	}
 	return nil
+}
+
+// refundCarvesToParent flows unused subordinate quota back into the
+// parent's bucket — the inverse of carveQuotaFromParent. Called from
+// the OnAgentExit hook for any Member with non-empty Parent.
+//
+// Semantics: at hire time we Consume'd the parent's bucket by the
+// child's full carved amount. At exit time we know how much the child
+// actually used (consumed) — the unused remainder is the refund. The
+// child's quota.Actor entries are about to be torn down so reading
+// them now via Remaining gives a stable snapshot.
+//
+// We iterate the child's effective quota maps to know which keys to
+// refund. For each one with a configured limit (skipping director-
+// style unlimited buckets), we Uncharge the parent the unused amount.
+// Pure read-then-write under the actor's serialisation; no atomicity
+// concerns across multiple buckets because each is independent.
+func (d *Daemon) refundCarvesToParent(roomID string, child *room.Member) {
+	if child.Parent == "" {
+		return
+	}
+	ctx := d.quotaCtx
+	eq := child.EffectiveQuota()
+	for model, _ := range eq.Tokens {
+		resource := "tokens:" + model
+		childKey := quota.Key{RoomID: roomID, Agent: child.Image.Name, Resource: resource}
+		parentKey := quota.Key{RoomID: roomID, Agent: child.Parent, Resource: resource}
+		d.refundOneBucket(ctx, childKey, parentKey)
+	}
+	for cat := range eq.APICalls {
+		childKey := quota.Key{RoomID: roomID, Agent: child.Image.Name, Resource: cat}
+		parentKey := quota.Key{RoomID: roomID, Agent: child.Parent, Resource: cat}
+		d.refundOneBucket(ctx, childKey, parentKey)
+	}
+}
+
+// refundOneBucket reads the child's remaining for `childKey` and
+// uncharges that amount from `parentKey`. Defensive against either
+// key being unlimited (no limit installed) — both cases just no-op
+// since "refund unused" is meaningless when neither side has a cap.
+func (d *Daemon) refundOneBucket(ctx context.Context, childKey, parentKey quota.Key) {
+	res, err := d.quota.Remaining(ctx, childKey)
+	if err != nil || res.Unlimited || res.Remaining <= 0 {
+		return
+	}
+	if _, err := d.quota.Uncharge(ctx, parentKey, res.Remaining); err != nil {
+		// Not fatal — the child has already exited and we can't really
+		// recover. Log so an operator can see the leak if it ever
+		// happens.
+		log.Printf("hire/junior refund: uncharge %v by %d failed: %v", parentKey, res.Remaining, err)
+		return
+	}
+	// Success: log at info level so daemon.log shows the refund as a
+	// concrete line ("paper-style-critic returned 3628 tokens to
+	// paper-supervisor on tokens:openai/gpt-5.4-mini"). Cheap insight
+	// for operators wondering why a parent's bucket grew unexpectedly.
+	log.Printf("hire/junior refund: %s → %s on %s: %d", childKey.Agent, parentKey.Agent, parentKey.Resource, res.Remaining)
 }
 
 // convertHireJuniorVolumes shifts from the rpc package's wire-shape

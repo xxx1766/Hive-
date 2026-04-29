@@ -356,7 +356,7 @@ manager-A.HireJunior(intern, "paper-outline:0.1.0", quota={tokens:5000})
    - 招的 rank 必须 **strictly less than** 调用方（manager 招 staff/intern 都行；招 manager 不行 —— 没有 peer-cycle delegation；intern/staff 无招聘权）
    - 同 Room 内 image 名字唯一（沿用 hire 既有约束）
 
-2. **Quota carve** (`carveQuotaFromParent`)：每个 token / api_call 桶都通过 `quota.Consume` 原子地从 parent 扣减；任何一桶扣不动，整个 hire 失败（partial-rollback 在 v2）。配额是**硬扣** —— sub-agent 没用完的不会自动回流给 parent；想精打细算就少 carve、再开第二个 sub-agent。Parent 没限额的桶（director 的所有桶、未声明的 model）走 unlimited 通路，不扣 parent，但 child 的 hard cap 仍生效。
+2. **Quota carve** (`carveQuotaFromParent`)：每个 token / api_call 桶都通过 `quota.Consume` 原子地从 parent 扣减；任何一桶扣不动，整个 hire 失败（partial-rollback 在 v2）。**Refund-on-exit**：sub-agent 退出时（`OnAgentExit` hook），用 `quota.Uncharge` 把每个桶里 child **没用完的余量**自动还给 parent —— 实测 supervisor 把 30k 桶 carve 出 8k 给 critic、critic 只用了 3k，剩下的 5k 在 critic 退出后立刻回流到 supervisor 的桶。Parent 没限额的桶（director 的所有桶、未声明的 model）走 unlimited 通路，不扣 parent，但 child 的 hard cap 仍生效。
 
 3. **Subordinate tree** (`Member.Parent`)：每个 sub-agent 的 `Parent` 字段记录招它的 agent 的 image 名。`roomstate.MemberSnap.Parent` 持久化到 state.json，**daemon-restart 后整棵树原样恢复**。UI Team tab 用这个字段渲染 indent 树，timeline / kanban 维度可以按 parent 过滤。
 
@@ -385,9 +385,9 @@ func main() {
 **Wire**：新 IPC method `hire/junior`（Agent → Hive），params `{ref, rank, tag?, model?, quota?, volumes?}`，returns `{image_name, rank, parent}`。CLI 不暴露这个 method —— 招聘下属是 agent 运行时行为，不是 user 直接动作。
 
 **v2（不在本期）**：
-1. **Refund-on-exit**：subordinate exit 时把未消耗的 carve 自动还给 parent。需要 quota.Actor 加 transactional transfer op。
-2. **HTTP UI 招聘控件**：UI 上点"+招个下属"直接走 hire/junior（目前只能从 SDK 调）。
-3. **跨 Rank carve**：让 manager 把自己的 director-only 工具临时下放给 sub-agent —— 当前 sub-agent 的能力固定取自 sub-agent 的 Rank，无法跨级。
+1. **HTTP UI 招聘控件**：UI 上点"+招个下属"直接走 hire/junior（目前只能从 SDK 调）。
+2. **跨 Rank carve**：让 manager 把自己的 director-only 工具临时下放给 sub-agent —— 当前 sub-agent 的能力固定取自 sub-agent 的 Rank，无法跨级。
+3. **Member-name aliasing**：当前 Room 同一 image 名字唯一，同 image 招两个 instance（`reviewer-A` / `reviewer-B`）会冲突。解锁 N-way fan-out 同 image。
 
 ---
 

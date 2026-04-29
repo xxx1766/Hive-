@@ -140,9 +140,12 @@ type Hooks struct {
 	// router has unregistered it. The daemon uses this to drop any
 	// long-lived state keyed off the Conn — most notably event-bus
 	// subscriptions, which would otherwise leak across the Agent's
-	// lifetime. Conn is the same pointer the daemon held during hire,
-	// so it's safe to use as an identity key. Called at most once per Conn.
-	OnAgentExit func(imageName string, conn *agent.Conn)
+	// lifetime — and to refund any unused subordinate quota back to
+	// the parent (`m.Parent`). The Member pointer remains valid for
+	// the duration of this call (room.go's exit goroutine holds a local
+	// var) even though it's already been removed from r.members.
+	// Called at most once per Conn.
+	OnAgentExit func(r *Room, m *Member)
 }
 
 // New creates an idle Room with its rootfs directory.
@@ -332,7 +335,7 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 		// the canonical identity for this Agent. OnStatus may surface
 		// the exit to a CLI tail and we want bookkeeping done by then.
 		if r.Hooks.OnAgentExit != nil {
-			r.Hooks.OnAgentExit(img.Manifest.Name, conn)
+			r.Hooks.OnAgentExit(r, member)
 		}
 		if r.Hooks.OnStatus != nil {
 			info := map[string]any{}

@@ -16,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anne-x/hive/internal/agent"
 	"github.com/anne-x/hive/internal/conversation"
 	"github.com/anne-x/hive/internal/eventbus"
 	"github.com/anne-x/hive/internal/httpapi"
@@ -489,13 +488,22 @@ func (d *Daemon) createRoom(roomID, name string) (*room.Room, error) {
 			d.publishConvEvent(r.ID, convID, conversation.EventConvMessage, updated.Messages[len(updated.Messages)-1])
 		},
 		RegisterAgentHandlers: d.installAgentProxies,
-		OnAgentExit: func(_ string, conn *agent.Conn) {
+		OnAgentExit: func(r *room.Room, m *room.Member) {
 			// Drop every events/* subscription tied to this Conn so they
 			// don't leak past the Agent's lifetime. Volume buses survive
 			// (other Rooms may still hold subscriptions); only this
 			// Conn's entries are removed.
 			if d.events != nil {
-				d.events.UnsubscribeNotifier(conn)
+				d.events.UnsubscribeNotifier(m.Conn)
+			}
+			// Refund-on-exit: if this Member was auto-hired by another
+			// Agent (m.Parent != ""), return any unused portion of each
+			// carved bucket to the parent's quota. The carve at hire time
+			// was an atomic Consume on the parent; the inverse at exit
+			// is an Uncharge. Bucket-by-bucket: refund = child.remaining
+			// (i.e. carved limit minus what the child actually used).
+			if m.Parent != "" {
+				d.refundCarvesToParent(r.ID, m)
 			}
 			// Skip persistence while the daemon is shutting down — the
 			// reapers fire as we kill Agents, but the existing on-disk
@@ -509,10 +517,10 @@ func (d *Daemon) createRoom(roomID, name string) (*room.Room, error) {
 			// that's already gone. Member is already removed from
 			// r.Members() by the reaper before this hook fires.
 			d.mu.RLock()
-			r := d.rooms[roomID]
+			room := d.rooms[roomID]
 			d.mu.RUnlock()
-			if r != nil {
-				d.persistRoom(r)
+			if room != nil {
+				d.persistRoom(room)
 			}
 		},
 	}
