@@ -41,6 +41,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anne-x/hive/internal/peerawait"
 	"github.com/anne-x/hive/internal/runners"
 	hive "github.com/anne-x/hive/sdk/go"
 )
@@ -93,7 +94,7 @@ func main() {
 	// peer-router goroutine: owns a.Peers() consumption and routes each
 	// message to either a registered awaiter (peer_call in flight) or
 	// the fallback channel that drives runFromPeer.
-	awaiter := newPeerAwaiter()
+	awaiter := peerawait.New()
 	go func() {
 		for {
 			select {
@@ -130,7 +131,7 @@ func main() {
 
 // runOne handles a top-level task/run dispatch. Final answer goes back
 // via task/done; failures via task/error.
-func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, system, model string, tools []string, aw *peerAwaiter) {
+func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, system, model string, tools []string, aw *peerawait.Awaiter) {
 	a.Log("info", "skill task received", map[string]any{"task_id": task.ID, "conv_id": task.ConvID})
 	out, err := react(ctx, a, system, model, tools, string(task.Input), task.ConvID, aw)
 	if err != nil {
@@ -146,7 +147,7 @@ func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, system, model s
 // counted against the round budget). Peer messages without ConvID
 // (ad-hoc inter-Agent chat) are surfaced as a log and dropped, since
 // they have no transcript and no reply contract.
-func runFromPeer(ctx context.Context, a *hive.Agent, peer *hive.PeerMessage, system, model string, tools []string, aw *peerAwaiter) {
+func runFromPeer(ctx context.Context, a *hive.Agent, peer *hive.PeerMessage, system, model string, tools []string, aw *peerawait.Awaiter) {
 	if peer.ConvID == "" {
 		a.Log("info", "peer message dropped (no conv_id)", map[string]any{"from": peer.From})
 		return
@@ -172,7 +173,7 @@ func runFromPeer(ctx context.Context, a *hive.Agent, peer *hive.PeerMessage, sys
 // count against the right Conversation transcript. aw is the peer-
 // router's awaiter registry — peer_call uses it to block this react
 // turn until the target replies.
-func react(ctx context.Context, a *hive.Agent, system, model string, tools []string, userInput, convID string, aw *peerAwaiter) (map[string]any, error) {
+func react(ctx context.Context, a *hive.Agent, system, model string, tools []string, userInput, convID string, aw *peerawait.Awaiter) (map[string]any, error) {
 	msgs := []hive.LLMMessage{
 		{Role: "system", Content: system},
 		{Role: "user", Content: userInput},
@@ -488,7 +489,7 @@ const peerCallTimeoutCap = 5 * time.Minute
 // requests it as: {"tool":"peer_call", "args":{"to":<image>,
 // "payload":<any>, "timeout_seconds":<int, optional>}}. Returns
 // {"from":<image>, "payload":<reply>} on success.
-func dispatchPeerCall(ctx context.Context, a *hive.Agent, args map[string]any, convID string, aw *peerAwaiter) (any, error) {
+func dispatchPeerCall(ctx context.Context, a *hive.Agent, args map[string]any, convID string, aw *peerawait.Awaiter) (any, error) {
 	to, _ := args["to"].(string)
 	if to == "" {
 		return nil, fmt.Errorf("peer_call: to is required")
@@ -543,7 +544,7 @@ func dispatchPeerCall(ctx context.Context, a *hive.Agent, args map[string]any, c
 // Returns {"replies": [{"to": …, "ok": bool, "from"?, "payload"?, "error"?}]}
 // in the original `calls` order so the LLM can pair replies to requests
 // without keying.
-func dispatchPeerCallMany(ctx context.Context, a *hive.Agent, args map[string]any, convID string, aw *peerAwaiter) (any, error) {
+func dispatchPeerCallMany(ctx context.Context, a *hive.Agent, args map[string]any, convID string, aw *peerawait.Awaiter) (any, error) {
 	if convID == "" {
 		return nil, fmt.Errorf("peer_call_many: no conv_id in scope")
 	}

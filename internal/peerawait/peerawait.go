@@ -1,18 +1,10 @@
-package main
-
-import (
-	"sync"
-
-	hive "github.com/anne-x/hive/sdk/go"
-)
-
-// peerAwaiter routes inbound peer messages to either a registered
+// Package peerawait routes inbound peer messages to either a registered
 // awaiter (a peer_call tool currently blocked waiting for a reply) or a
 // fallback channel that the runner's main goroutine drives via
-// runFromPeer. The runner spawns one peer-router goroutine that
-// consumes a.Peers() and calls Dispatch on every message; tool
-// implementations call Register before sending and read the returned
-// channel until the reply arrives.
+// runFromPeer. A runner spawns one peer-router goroutine that consumes
+// a.Peers() and calls Dispatch on every message; tool implementations
+// call Register before sending and read the returned channel until the
+// reply arrives.
 //
 // Routing key is (from, convID) — that's the natural tuple for a
 // request/response peer_call: "I'm coordinator, I sent paper-writer a
@@ -20,7 +12,20 @@ import (
 // multiple awaiters exist for the same key (rare; would mean overlapping
 // peer_calls to the same agent in the same conversation) only the first
 // one wins; subsequent calls receive a fresh channel for the next reply.
-type peerAwaiter struct {
+//
+// Both hive-skill-runner and hive-workflow-runner consume this package
+// so the awaiter behaviour stays consistent across runner kinds.
+package peerawait
+
+import (
+	"sync"
+
+	hive "github.com/anne-x/hive/sdk/go"
+)
+
+// Awaiter is the awaiter registry + fallback fan-out used by a runner's
+// peer-router goroutine.
+type Awaiter struct {
 	mu       sync.Mutex
 	waiters  map[string]chan *hive.PeerMessage
 	fallback chan *hive.PeerMessage
@@ -37,8 +42,9 @@ const awaitBuffer = 1
 // capacity (see sdk/go/agent.go).
 const fallbackBuffer = 16
 
-func newPeerAwaiter() *peerAwaiter {
-	return &peerAwaiter{
+// New constructs an empty Awaiter ready to be wired into a runner.
+func New() *Awaiter {
+	return &Awaiter{
 		waiters:  map[string]chan *hive.PeerMessage{},
 		fallback: make(chan *hive.PeerMessage, fallbackBuffer),
 	}
@@ -58,7 +64,7 @@ func awaitKey(from, convID string) string {
 // zero value and treats it as cancellation). This is a defensive
 // behaviour for the unusual case of overlapping peer_calls to the same
 // peer in the same conversation; well-behaved skills don't do this.
-func (a *peerAwaiter) Register(from, convID string) (<-chan *hive.PeerMessage, func()) {
+func (a *Awaiter) Register(from, convID string) (<-chan *hive.PeerMessage, func()) {
 	key := awaitKey(from, convID)
 	ch := make(chan *hive.PeerMessage, awaitBuffer)
 	a.mu.Lock()
@@ -88,7 +94,7 @@ func (a *peerAwaiter) Register(from, convID string) (<-chan *hive.PeerMessage, f
 // drop — skills that depend on peer-driven progress should use
 // peer_call (which routes through a dedicated awaiter, never the
 // fallback).
-func (a *peerAwaiter) Dispatch(p *hive.PeerMessage) bool {
+func (a *Awaiter) Dispatch(p *hive.PeerMessage) bool {
 	if p == nil {
 		return false
 	}
@@ -121,13 +127,13 @@ func (a *peerAwaiter) Dispatch(p *hive.PeerMessage) bool {
 // Fallback returns the channel of peer messages NOT consumed by any
 // awaiter. The runner's main goroutine ranges over this so runFromPeer
 // keeps working for ad-hoc inbound messages.
-func (a *peerAwaiter) Fallback() <-chan *hive.PeerMessage {
+func (a *Awaiter) Fallback() <-chan *hive.PeerMessage {
 	return a.fallback
 }
 
 // Close shuts the fallback channel so the main goroutine's range / select
 // terminates. Idempotent.
-func (a *peerAwaiter) Close() {
+func (a *Awaiter) Close() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for k, ch := range a.waiters {

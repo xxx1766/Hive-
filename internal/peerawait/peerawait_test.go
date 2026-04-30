@@ -1,4 +1,4 @@
-package main
+package peerawait
 
 import (
 	"sync"
@@ -8,8 +8,8 @@ import (
 	hive "github.com/anne-x/hive/sdk/go"
 )
 
-func TestPeerAwaiter_DispatchToRegistered(t *testing.T) {
-	a := newPeerAwaiter()
+func TestAwaiter_DispatchToRegistered(t *testing.T) {
+	a := New()
 	ch, cancel := a.Register("worker", "C1")
 	defer cancel()
 
@@ -25,8 +25,8 @@ func TestPeerAwaiter_DispatchToRegistered(t *testing.T) {
 	}
 }
 
-func TestPeerAwaiter_NoMatchGoesToFallback(t *testing.T) {
-	a := newPeerAwaiter()
+func TestAwaiter_NoMatchGoesToFallback(t *testing.T) {
+	a := New()
 	// No registration — every dispatch should land in fallback.
 	a.Dispatch(&hive.PeerMessage{From: "writer", ConvID: "C2", Payload: []byte(`{}`)})
 
@@ -40,8 +40,8 @@ func TestPeerAwaiter_NoMatchGoesToFallback(t *testing.T) {
 	}
 }
 
-func TestPeerAwaiter_KeyMismatchGoesToFallback(t *testing.T) {
-	a := newPeerAwaiter()
+func TestAwaiter_KeyMismatchGoesToFallback(t *testing.T) {
+	a := New()
 	// Register expecting reply from "writer"/conv-A; arrival is from
 	// "writer"/conv-B (different conv) — should fall through to fallback,
 	// not the awaiter.
@@ -62,8 +62,8 @@ func TestPeerAwaiter_KeyMismatchGoesToFallback(t *testing.T) {
 	}
 }
 
-func TestPeerAwaiter_CancelUnregisters(t *testing.T) {
-	a := newPeerAwaiter()
+func TestAwaiter_CancelUnregisters(t *testing.T) {
+	a := New()
 	_, cancel := a.Register("worker", "C1")
 	cancel()
 
@@ -74,8 +74,8 @@ func TestPeerAwaiter_CancelUnregisters(t *testing.T) {
 	}
 }
 
-func TestPeerAwaiter_DoubleRegisterClosesPrior(t *testing.T) {
-	a := newPeerAwaiter()
+func TestAwaiter_DoubleRegisterClosesPrior(t *testing.T) {
+	a := New()
 	ch1, _ := a.Register("worker", "C1")
 	// Register again with same key — should close ch1 (signalling cancel
 	// to whoever was reading it) and replace with a fresh channel.
@@ -102,8 +102,8 @@ func TestPeerAwaiter_DoubleRegisterClosesPrior(t *testing.T) {
 	}
 }
 
-func TestPeerAwaiter_ConcurrentDispatch(t *testing.T) {
-	a := newPeerAwaiter()
+func TestAwaiter_ConcurrentDispatch(t *testing.T) {
+	a := New()
 	const N = 50
 	var wg sync.WaitGroup
 	results := make(chan bool, N)
