@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/anne-x/hive/internal/peerawait"
 	"github.com/anne-x/hive/internal/runners"
 	"github.com/anne-x/hive/internal/workflow"
 	hive "github.com/anne-x/hive/sdk/go"
@@ -56,18 +57,43 @@ func main() {
 	})
 
 	ctx := context.Background()
+
+	// peer-router goroutine: owns a.Peers() consumption and routes each
+	// inbound message to either a registered awaiter (peer_call in
+	// flight from a workflow step) or the fallback channel that drives
+	// runFromPeer (ad-hoc inbound peer with conv_id treated as a new
+	// task trigger). Same architecture as hive-skill-runner; lets a
+	// kind: workflow agent be both a peer_call initiator (via flow.json)
+	// and a peer_call target.
+	aw := peerawait.New()
+	go func() {
+		for {
+			select {
+			case p, ok := <-a.Peers():
+				if !ok {
+					aw.Close()
+					return
+				}
+				aw.Dispatch(p)
+			case <-a.Done():
+				aw.Close()
+				return
+			}
+		}
+	}()
+
 	for {
 		select {
 		case task, ok := <-a.Tasks():
 			if !ok {
 				return
 			}
-			runOne(ctx, a, task, mode, model, tools)
-		case peer, ok := <-a.Peers():
+			runOne(ctx, a, task, mode, model, tools, aw)
+		case peer, ok := <-aw.Fallback():
 			if !ok {
 				return
 			}
-			runFromPeer(ctx, a, peer, mode, model, tools)
+			runFromPeer(ctx, a, peer, mode, model, tools, aw)
 		case <-a.Done():
 			return
 		}
@@ -79,14 +105,14 @@ func main() {
 // is shipped back to the sender as a peer/send hop within the same
 // Conversation. Peer messages without ConvID are dropped (logged) since
 // workflows have no contract for ad-hoc inbound chat.
-func runFromPeer(ctx context.Context, a *hive.Agent, peer *hive.PeerMessage, mode *runMode, model string, tools []string) {
+func runFromPeer(ctx context.Context, a *hive.Agent, peer *hive.PeerMessage, mode *runMode, model string, tools []string, aw *peerawait.Awaiter) {
 	if peer.ConvID == "" {
 		a.Log("info", "peer message dropped (no conv_id)", map[string]any{"from": peer.From})
 		return
 	}
 	a.Log("info", "workflow peer received", map[string]any{"from": peer.From, "conv_id": peer.ConvID, "mode": mode.name})
 
-	out, err := executeWorkflow(ctx, a, mode, model, tools, peer.Payload, peer.ConvID)
+	out, err := executeWorkflow(ctx, a, mode, model, tools, peer.Payload, peer.ConvID, aw)
 	if err != nil {
 		_ = a.PeerSend(ctx, peer.From, map[string]any{"error": err.Error()}, hive.WithConv(peer.ConvID))
 		return
@@ -128,9 +154,9 @@ func detectMode() (*runMode, error) {
 
 // ── task execution ───────────────────────────────────────────────────────
 
-func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, mode *runMode, model string, tools []string) {
+func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, mode *runMode, model string, tools []string, aw *peerawait.Awaiter) {
 	a.Log("info", "workflow task received", map[string]any{"task_id": task.ID, "mode": mode.name, "conv_id": task.ConvID})
-	out, err := executeWorkflow(ctx, a, mode, model, tools, task.Input, task.ConvID)
+	out, err := executeWorkflow(ctx, a, mode, model, tools, task.Input, task.ConvID, aw)
 	if err != nil {
 		// executeWorkflow returns a *runErr for staged failures so we can
 		// preserve the original exit code — keep the existing 2..6 mapping.
@@ -158,7 +184,7 @@ func (e *runErr) Error() string { return e.msg }
 // the structured reply (`{output, mode, steps}`). convID, when non-empty,
 // is injected into peer_send args so cross-Agent hops emitted by the
 // workflow contribute to the right Conversation transcript.
-func executeWorkflow(ctx context.Context, a *hive.Agent, mode *runMode, model string, tools []string, input json.RawMessage, convID string) (map[string]any, error) {
+func executeWorkflow(ctx context.Context, a *hive.Agent, mode *runMode, model string, tools []string, input json.RawMessage, convID string, aw *peerawait.Awaiter) (map[string]any, error) {
 	wf := mode.static
 	if mode.name == "llm" {
 		planned, err := planWorkflow(ctx, a, mode.prompt, model, tools, input)
@@ -205,21 +231,42 @@ func executeWorkflow(ctx context.Context, a *hive.Agent, mode *runMode, model st
 				}
 			}
 		}
-		// Conversation hop attribution: a workflow step that emits
-		// peer_send inside a Conversation should advance the right
-		// transcript. Inject conv_id only if not already pinned by the
-		// flow.json (explicit > implicit).
+		// Conversation hop attribution: a workflow step that emits a
+		// peer hop inside a Conversation should advance the right
+		// transcript. peer_call uses the conv_id passed to its
+		// dispatcher (separate parameter, not args), so injection only
+		// matters for peer_send here. Explicit > implicit.
 		if step.Tool == "peer_send" && convID != "" {
 			if v, ok := resolvedArgs["conv_id"]; !ok || v == nil || v == "" {
 				resolvedArgs["conv_id"] = convID
 			}
 		}
 		a.Log("info", "step start", map[string]any{"i": i, "id": step.ID, "tool": step.Tool})
-		result, err := runners.DispatchTool(ctx, a, step.Tool, resolvedArgs)
-		if err != nil {
-			return nil, &runErr{code: 5, msg: fmt.Sprintf("step[%d] %s (%s): %v", i, step.ID, step.Tool, err)}
+		var (
+			stepResult any
+			stepErr    error
+		)
+		switch step.Tool {
+		case "peer_call":
+			// Synchronous request/reply — register awaiter, PeerSend,
+			// block on the matching reply. Result shape:
+			// {"from": <name>, "payload": <reply>}. Stored in
+			// wctx.Steps[step.ID]; downstream steps reference it as
+			// $steps.<id>.payload.
+			stepResult, stepErr = dispatchPeerCall(ctx, a, resolvedArgs, convID, aw)
+		case "peer_call_many":
+			// Parallel fan-out — one PeerSend per call, all awaiters
+			// registered upfront, WaitGroup-join. Result shape:
+			// {"replies": [{"to","ok","from","payload"|"error"}, ...]}
+			// in the original calls order.
+			stepResult, stepErr = dispatchPeerCallMany(ctx, a, resolvedArgs, convID, aw)
+		default:
+			stepResult, stepErr = runners.DispatchTool(ctx, a, step.Tool, resolvedArgs)
 		}
-		wctx.Steps[step.ID] = result
+		if stepErr != nil {
+			return nil, &runErr{code: 5, msg: fmt.Sprintf("step[%d] %s (%s): %v", i, step.ID, step.Tool, stepErr)}
+		}
+		wctx.Steps[step.ID] = stepResult
 	}
 
 	out, err := wf.ResolveOutput(wctx)
@@ -295,7 +342,9 @@ func plannerInstructions(tools []string) string {
 		b.WriteString(`  fs_list      args {path} → [{name,is_dir,size}...]` + "\n")
 	}
 	if hasTool(tools, runners.GroupPeer) {
-		b.WriteString(`  peer_send    args {to,payload}` + "\n")
+		b.WriteString(`  peer_send       args {to,payload} → "sent"  (fire-and-forget; returns immediately)` + "\n")
+		b.WriteString(`  peer_call       args {to,payload,timeout_seconds?} → {from,payload}  (sync await; only inside a Conversation)` + "\n")
+		b.WriteString(`  peer_call_many  args {calls:[{to,payload},...],timeout_seconds?} → {replies:[{to,ok,from,payload,error},...]}  (parallel fan-out)` + "\n")
 	}
 	if hasTool(tools, runners.GroupLLM) {
 		b.WriteString(`  llm_complete args {model,messages,max_tokens?} → {text,usage}` + "\n")

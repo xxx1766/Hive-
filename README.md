@@ -529,7 +529,7 @@ make demo           # 端到端 smoke（需要 root）
 ### 🚀 v2（`DEMO_PLAN.md` 里明确列为"不做"的大特性）
 
 - [x] ~~**`hire_junior` refund-on-exit**~~ —— 已完成：`quota.Actor.Uncharge` + 在 `OnAgentExit` 钩子里按 child.EffectiveQuota 把每桶未消耗余量回流到 parent.bucket。可观察：carve 30k 给 sub，sub 用 5k 退出后，parent 的 `hive team` 余量从 -25k 回到 -5k。
-- [ ] **`peer_call` 在 workflow-runner**：现在只 skill-runner 支持 peer-router goroutine + awaiter；workflow agent 想 peer_call 还得走 fallback 路径或改成 skill。
+- [x] ~~**`peer_call` 在 workflow-runner**~~ —— 已完成：awaiter 抽到 `internal/peerawait/` 共享包；workflow-runner 也有 peer-router goroutine + awaiter，flow.json / planner 可发 `peer_call` / `peer_call_many` 步骤，结果落到 `$steps.<id>.payload`。见 `examples/workflow-peer-call/`（kind: workflow → peer_call → kind: skill 的最小 demo）。
 - [ ] **跨 Room Conversation**：Conversation 当前 Room-scoped；通过 Volume 桥接两个 Room 的 transcript 是自然延伸（类比已有的跨 Room events）。
 - [ ] **HTTP UI 鉴权**：默认 `127.0.0.1:8910` 只监本地。要远程访问得加 token / mTLS。
 - [ ] **HTTP UI hire/fire 控件**：当前 UI 只读，能创建 conversation 但不能直接 hire 新 agent。

@@ -1,0 +1,37 @@
+# workflow-peer-call demo — proves hive-workflow-runner can INITIATE
+# synchronous peer_call (not just receive them).
+#
+# Two agents:
+#   delegate    (kind: workflow) — flow.json with one peer_call step
+#   echo-skill  (kind: skill)    — deterministic JSON echo (target)
+#
+# Setup (one-time):
+#   ./bin/hive build ./examples/workflow-peer-call/echo-skill
+#   ./bin/hive build ./examples/workflow-peer-call/delegate
+#
+# Run:
+#   ROOM=$(./bin/hive hire -f hivefiles/workflow-peer-call.yaml)
+#
+#   # UI: http://127.0.0.1:8910 → "+ New Conversation"
+#   #     target = delegate
+#   #     input  = {"hello": "world"}
+#   # Expected output: {"echo": {"hello":"world"}, "from": "echo-skill"}
+#
+# Or via CLI:
+#   ./bin/hive run "$ROOM" --target delegate '{"hello":"world"}'
+#
+# The transcript shows two rounds: round 1 = peer hop delegate → echo-skill,
+# round 2 = peer hop echo-skill → delegate. The second hop is what
+# peer_call's awaiter consumes; without peer_call the round-2 reply would
+# fall into runFromPeer and be treated as a new task (the bug this fixes).
+room: workflow-peer-call-demo
+entry: delegate
+agents:
+  - image: delegate:0.1.0
+    rank: staff
+  - image: echo-skill:0.1.0
+    rank: staff
+    model: openai/gpt-5.4-mini
+    quota:
+      tokens:
+        "openai/gpt-5.4-mini": 8000

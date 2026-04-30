@@ -1,0 +1,14 @@
+{
+  "description": "Single-step workflow that peer_calls echo-skill and returns the reply payload as the task output. Proves that hive-workflow-runner can initiate synchronous peer calls, not just receive them — closes the runner-symmetry gap with hive-skill-runner.",
+  "steps": [
+    {
+      "id": "ask",
+      "tool": "peer_call",
+      "args": {
+        "to": "echo-skill",
+        "payload": "$input"
+      }
+    }
+  ],
+  "output": "$steps.ask.payload"
+}
