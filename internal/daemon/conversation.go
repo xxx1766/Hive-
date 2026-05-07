@@ -35,6 +35,57 @@ func (d *Daemon) handleConversationCreate(ctx context.Context, params json.RawMe
 			fmt.Sprintf("agent %s not hired in room %s", p.Target, p.RoomID))
 	}
 
+	// Validate cross-Room members (when supplied). Each must reference
+	// an active Room and be a hired Member of that Room. Empty list is
+	// the legacy single-Room case — leave Members nil and the conv
+	// behaves as before.
+	var members []conversation.Member
+	if len(p.Members) > 0 {
+		members = make([]conversation.Member, 0, len(p.Members))
+		seen := map[string]bool{}
+		for i, m := range p.Members {
+			if m.RoomID == "" || m.AgentName == "" {
+				return nil, protocol.NewError(protocol.ErrCodeInvalidParams,
+					fmt.Sprintf("members[%d]: room_id and agent_name are required", i))
+			}
+			key := m.RoomID + "/" + m.AgentName
+			if seen[key] {
+				return nil, protocol.NewError(protocol.ErrCodeInvalidParams,
+					fmt.Sprintf("members[%d]: duplicate %s", i, key))
+			}
+			seen[key] = true
+			d.mu.RLock()
+			tr := d.rooms[m.RoomID]
+			d.mu.RUnlock()
+			if tr == nil {
+				return nil, protocol.NewError(protocol.ErrCodeInvalidParams,
+					fmt.Sprintf("members[%d]: room %s not found", i, m.RoomID))
+			}
+			if tr.Member(m.AgentName) == nil {
+				return nil, protocol.NewError(protocol.ErrCodeInvalidParams,
+					fmt.Sprintf("members[%d]: agent %s not hired in room %s", i, m.AgentName, m.RoomID))
+			}
+			members = append(members, conversation.Member{
+				RoomID:    m.RoomID,
+				AgentName: m.AgentName,
+			})
+		}
+		// The owner (RoomID) and target must themselves appear in members.
+		// Saves the user from confusing "I declared members but the conv
+		// can't start because the initial target isn't allowed to talk".
+		ownerInMembers := false
+		for _, m := range members {
+			if m.RoomID == p.RoomID && m.AgentName == p.Target {
+				ownerInMembers = true
+				break
+			}
+		}
+		if !ownerInMembers {
+			return nil, protocol.NewError(protocol.ErrCodeInvalidParams,
+				fmt.Sprintf("members: must include the initial target %s/%s", p.RoomID, p.Target))
+		}
+	}
+
 	c := &conversation.Conversation{
 		ID:            conversation.NewID(),
 		RoomID:        p.RoomID,
@@ -43,6 +94,7 @@ func (d *Daemon) handleConversationCreate(ctx context.Context, params json.RawMe
 		InitialTarget: p.Target,
 		InitialInput:  p.Input,
 		MaxRounds:     p.MaxRounds,
+		Members:       members,
 	}
 	if err := d.convStore.Create(c); err != nil {
 		return nil, protocol.NewError(protocol.ErrCodeInternal, err.Error())

@@ -112,6 +112,15 @@ func (d *Daemon) httpCreateConversation(roomID string, p httpapi.ConvCreateInput
 		Input:     rawInput,
 		MaxRounds: p.MaxRounds,
 	}
+	if len(p.Members) > 0 {
+		params.Members = make([]ipc.ConversationMemberRef, 0, len(p.Members))
+		for _, m := range p.Members {
+			params.Members = append(params.Members, ipc.ConversationMemberRef{
+				RoomID:    m.RoomID,
+				AgentName: m.AgentName,
+			})
+		}
+	}
 	body, _ := json.Marshal(params)
 	res, err := d.handleConversationCreate(nil, body, nil)
 	if err != nil {

@@ -458,10 +458,19 @@ func (d *Daemon) createRoom(roomID, name string) (*room.Room, error) {
 			if convID == "" {
 				return nil
 			}
-			c, err := d.convStore.Load(r.ID, convID)
+			// Owner Room may differ from sender's r.ID for cross-Room
+			// convs — consult the index. Fall back to r.ID when the
+			// index doesn't know (lets brand-new convs that hadn't
+			// finished Create when this fired still resolve via the
+			// sender's directory).
+			ownerID := d.convIndex.Owner(convID)
+			if ownerID == "" {
+				ownerID = r.ID
+			}
+			c, err := d.convStore.Load(ownerID, convID)
 			if err != nil {
 				return protocol.NewError(protocol.ErrCodeInvalidParams,
-					fmt.Sprintf("conversation %s not found in room %s", convID, r.ID))
+					fmt.Sprintf("conversation %s not found", convID))
 			}
 			if c.Status.Terminal() {
 				return protocol.NewError(protocol.ErrCodeInvalidParams,
@@ -473,12 +482,12 @@ func (d *Daemon) createRoom(roomID, name string) (*room.Room, error) {
 				// terminal and bounce on the check above. Caller-facing error
 				// surfaces as a permission_denied so the agent's reply path
 				// treats it like any other policy rejection.
-				_, _ = d.convStore.Update(r.ID, convID, func(cc *conversation.Conversation) {
+				_, _ = d.convStore.Update(ownerID, convID, func(cc *conversation.Conversation) {
 					cc.Status = conversation.StatusCancelled
 					cc.Error = "round_cap"
 					cc.FinishedAt = time.Now().UTC()
 				})
-				d.publishConvEvent(r.ID, convID, conversation.EventConvFinished, map[string]any{
+				d.publishConvEvent(ownerID, convID, conversation.EventConvFinished, map[string]any{
 					"reason": "round_cap", "max_rounds": c.MaxRounds,
 				})
 				return protocol.NewError(protocol.ErrCodePermissionDenied,
@@ -486,11 +495,16 @@ func (d *Daemon) createRoom(roomID, name string) (*room.Room, error) {
 			}
 			return nil
 		},
+		PeerSendForward: d.peerSendForward,
 		PeerSendDelivered: func(r *room.Room, from, to, convID string, payload json.RawMessage) {
 			if convID == "" {
 				return
 			}
-			updated, err := d.convStore.Append(r.ID, convID, conversation.Message{
+			ownerID := d.convIndex.Owner(convID)
+			if ownerID == "" {
+				ownerID = r.ID
+			}
+			updated, err := d.convStore.Append(ownerID, convID, conversation.Message{
 				From:    from,
 				To:      to,
 				Kind:    conversation.KindPeer,
@@ -503,7 +517,7 @@ func (d *Daemon) createRoom(roomID, name string) (*room.Room, error) {
 			// Surface the new message on the SSE bus and as a daemon-wide
 			// streaming notification so an active room/run subscriber also
 			// sees the hop without polling.
-			d.publishConvEvent(r.ID, convID, conversation.EventConvMessage, updated.Messages[len(updated.Messages)-1])
+			d.publishConvEvent(ownerID, convID, conversation.EventConvMessage, updated.Messages[len(updated.Messages)-1])
 		},
 		RegisterAgentHandlers: d.installAgentProxies,
 		OnAgentExit: func(r *room.Room, m *room.Member) {

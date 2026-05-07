@@ -149,6 +149,19 @@ type Hooks struct {
 	// to append the message to the Conversation transcript and publish
 	// to the SSE bus. Fire-and-forget — return value ignored.
 	PeerSendDelivered func(r *Room, from, to, convID string, payload json.RawMessage)
+	// PeerSendForward (when non-nil) gets a chance to take over delivery
+	// of a peer/send entirely. If it returns handled=true, the local
+	// router is bypassed AND PeerSendDelivered is NOT fired (the hook
+	// is responsible for any transcript/event work it wants done).
+	// If handled=false, normal local-router delivery proceeds.
+	//
+	// This is the cross-Room pivot: when a conversation's Members
+	// reference an agent in a different Room, the daemon's hook
+	// resolves the target's home Room and dispatches through THAT
+	// Room's router instead of `r`'s. Same-Room and conv-less
+	// peer/send fall through (handled=false) so existing semantics
+	// don't shift.
+	PeerSendForward func(r *Room, from, to, convID string, payload json.RawMessage) (handled bool, err error)
 	// OnAgentExit fires after an Agent's process has been reaped and the
 	// router has unregistered it. The daemon uses this to drop any
 	// long-lived state keyed off the Conn — most notably event-bus
@@ -493,12 +506,26 @@ func (r *Room) installCoreHandlers(m *Member) {
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, err
 		}
-		// Conversation hooks: round-cap precheck, then post-success append.
-		// Both are no-ops when the daemon hasn't installed them or when
+		// Conversation hooks: round-cap precheck, then forward (cross-
+		// Room delivery), then local routing + post-success append. All
+		// hooks no-op when the daemon hasn't installed them or when
 		// p.ConvID == "" (peer messages outside any Conversation).
 		if r.Hooks.PeerSendIntercept != nil {
 			if err := r.Hooks.PeerSendIntercept(r, m.Name, p.To, p.ConvID, p.Payload); err != nil {
 				return nil, err
+			}
+		}
+		if r.Hooks.PeerSendForward != nil {
+			handled, err := r.Hooks.PeerSendForward(r, m.Name, p.To, p.ConvID, p.Payload)
+			if err != nil {
+				return nil, err
+			}
+			if handled {
+				// Hook took ownership — it has already dispatched (or
+				// failed deterministically) and emitted any transcript
+				// /event work itself. Skip local router AND
+				// PeerSendDelivered.
+				return struct{}{}, nil
 			}
 		}
 		if err := r.router.Send(ctx, m.Name, p.To, p.ConvID, p.Payload); err != nil {

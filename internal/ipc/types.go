@@ -215,12 +215,27 @@ type RoomStatusNotification struct {
 // ConversationCreateParams plans a new Conversation but does not dispatch
 // it. The actual dispatch happens via ConversationStart, which lets a UI
 // queue several conversations before kicking them off.
+//
+// For a cross-Room Conversation, populate Members with explicit
+// (room_id, agent_name) pairs spanning multiple Rooms. RoomID is
+// then the OWNER (the conv file lives there) — usually the room of
+// the initial Target. The daemon validates each member is hired in
+// its declared Room before creating the conv.
 type ConversationCreateParams struct {
-	RoomID    string          `json:"room_id"`
-	Tag       string          `json:"tag,omitempty"`         // human-friendly UI label; auto if empty
-	Target    string          `json:"target"`                // initial Agent (image name) the conv targets
-	Input     json.RawMessage `json:"input,omitempty"`       // initial task payload
-	MaxRounds int             `json:"max_rounds,omitempty"`  // 0 ⇒ DefaultMaxRounds
+	RoomID    string                  `json:"room_id"`
+	Tag       string                  `json:"tag,omitempty"`         // human-friendly UI label; auto if empty
+	Target    string                  `json:"target"`                // initial Agent (image name) the conv targets
+	Input     json.RawMessage         `json:"input,omitempty"`       // initial task payload
+	MaxRounds int                     `json:"max_rounds,omitempty"`  // 0 ⇒ DefaultMaxRounds
+	Members   []ConversationMemberRef `json:"members,omitempty"`     // optional; cross-Room conv participants
+}
+
+// ConversationMemberRef is the wire form of conversation.Member —
+// duplicated here so internal/ipc stays free of an internal/conversation
+// import cycle. Daemon copies field-by-field on receive.
+type ConversationMemberRef struct {
+	RoomID    string `json:"room_id"`
+	AgentName string `json:"agent_name"`
 }
 
 type ConversationCreateResult struct {

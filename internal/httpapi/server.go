@@ -127,11 +127,24 @@ type Server struct {
 }
 
 // ConvCreateInput is the shape of POST /api/rooms/{id}/conversations.
+//
+// Members is optional: when populated, the conversation is cross-Room
+// — peer hops between members in different Rooms route via the
+// daemon's PeerSendForward hook instead of the local Room router.
+// Empty Members preserves today's per-Room behaviour.
 type ConvCreateInput struct {
-	Tag       string `json:"tag,omitempty"`
-	Target    string `json:"target"`
-	Input     any    `json:"input,omitempty"`
-	MaxRounds int    `json:"max_rounds,omitempty"`
+	Tag       string         `json:"tag,omitempty"`
+	Target    string         `json:"target"`
+	Input     any            `json:"input,omitempty"`
+	MaxRounds int            `json:"max_rounds,omitempty"`
+	Members   []ConvMemberIn `json:"members,omitempty"`
+}
+
+// ConvMemberIn is the wire shape of a single (room, agent) pair on a
+// cross-Room conv create request.
+type ConvMemberIn struct {
+	RoomID    string `json:"room_id"`
+	AgentName string `json:"agent_name"`
 }
 
 // Hooks bundles the daemon-side dispatch entry points. They mirror the
