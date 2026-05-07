@@ -125,12 +125,15 @@ type Conversation struct {
 
 // Summary is the compact projection used by list endpoints — drops the
 // full transcript so a UI can render dozens of rooms without bloat.
+// Members is forwarded so the kanban can flag cross-Room convs without
+// fetching the full transcript per card.
 type Summary struct {
 	ID            string    `json:"id"`
 	RoomID        string    `json:"room_id"`
 	Tag           string    `json:"tag,omitempty"`
 	Status        Status    `json:"status"`
 	InitialTarget string    `json:"initial_target"`
+	Members       []Member  `json:"members,omitempty"`
 	MaxRounds     int       `json:"max_rounds"`
 	RoundCount    int       `json:"round_count"`
 	MessageCount  int       `json:"message_count"`
@@ -147,6 +150,7 @@ func (c *Conversation) Summarize() Summary {
 		Tag:           c.Tag,
 		Status:        c.Status,
 		InitialTarget: c.InitialTarget,
+		Members:       c.Members,
 		MaxRounds:     c.MaxRounds,
 		RoundCount:    c.RoundCount,
 		MessageCount:  len(c.Messages),
