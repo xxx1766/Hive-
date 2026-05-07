@@ -15,12 +15,13 @@ const (
 	MethodVolumeList   = "volume/list"
 	MethodVolumeRemove = "volume/remove"
 
-	MethodRoomInit = "room/init"
-	MethodRoomList = "room/list"
-	MethodRoomStop = "room/stop"
-	MethodRoomTeam = "room/team"
-	MethodRoomRun  = "room/run"  // streaming: server emits log/status notifications until final response
-	MethodRoomLogs = "room/logs" // snapshot of Agent stderr log files
+	MethodRoomInit   = "room/init"
+	MethodRoomList   = "room/list"
+	MethodRoomStop   = "room/stop"
+	MethodRoomTeam   = "room/team"
+	MethodRoomRun    = "room/run"    // streaming: server emits log/status notifications until final response
+	MethodRoomLogs   = "room/logs"   // snapshot of Agent stderr log files
+	MethodRoomRename = "room/rename" // mutate display Name; RoomID is immutable
 
 	MethodAgentHire = "agent/hire"
 

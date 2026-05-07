@@ -121,6 +121,10 @@ type Server struct {
 	createConv func(roomID string, p ConvCreateInput) (string, error)
 	startConv  func(roomID, convID string) error
 	cancelConv func(roomID, convID, reason string) error
+	// renameRoom mutates a Room's display Name via the same handler the
+	// IPC dispatcher uses, so HTTP and CLI paths produce identical state
+	// changes (including persistence to state.json).
+	renameRoom func(roomID, name string) error
 
 	httpServer *http.Server
 	listener   net.Listener
@@ -153,6 +157,7 @@ type Hooks struct {
 	CreateConversation func(roomID string, p ConvCreateInput) (string, error)
 	StartConversation  func(roomID, convID string) error
 	CancelConversation func(roomID, convID, reason string) error
+	RenameRoom         func(roomID, name string) error
 }
 
 // NewServer wires up an HTTP server. It does not start listening — call
@@ -171,6 +176,7 @@ func NewServer(b Backend, store *conversation.Store, bus *conversation.Bus, vol 
 		createConv: hooks.CreateConversation,
 		startConv:  hooks.StartConversation,
 		cancelConv: hooks.CancelConversation,
+		renameRoom: hooks.RenameRoom,
 	}
 }
 

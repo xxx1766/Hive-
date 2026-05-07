@@ -93,6 +93,7 @@ func (d *Daemon) startHTTPAPI() *httpapi.Server {
 		CreateConversation: d.httpCreateConversation,
 		StartConversation:  d.httpStartConversation,
 		CancelConversation: d.httpCancelConversation,
+		RenameRoom:         d.httpRenameRoom,
 	}
 	srv := httpapi.NewServer(&httpBackend{d: d}, d.convStore, d.convBus, d.volumes, hooks)
 	if err := srv.Start(); err != nil {
@@ -151,6 +152,15 @@ func (d *Daemon) httpStartConversation(roomID, convID string) error {
 func (d *Daemon) httpCancelConversation(roomID, convID, reason string) error {
 	body, _ := json.Marshal(ipc.ConversationCancelParams{RoomID: roomID, ConvID: convID, Reason: reason})
 	_, err := d.handleConversationCancel(nil, body, nil)
+	if err != nil {
+		return unwrapErr(err)
+	}
+	return nil
+}
+
+func (d *Daemon) httpRenameRoom(roomID, name string) error {
+	body, _ := json.Marshal(ipc.RoomRenameParams{RoomID: roomID, Name: name})
+	_, err := d.handleRoomRename(nil, body, nil)
 	if err != nil {
 		return unwrapErr(err)
 	}
