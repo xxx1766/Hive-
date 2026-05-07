@@ -1,0 +1,11 @@
+# Cross-Room demo, Room A — hires chatter-a only.
+# Pair this with hivefiles/cross-room-b.yaml in a separate room.
+room: cross-room-a
+entry: chatter-a
+agents:
+  - image: chatter-a:0.1.0
+    rank: staff
+    model: openai/gpt-5.4-mini
+    quota:
+      tokens:
+        "openai/gpt-5.4-mini": 12000

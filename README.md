@@ -530,7 +530,7 @@ make demo           # 端到端 smoke（需要 root）
 
 - [x] ~~**`hire_junior` refund-on-exit**~~ —— 已完成：`quota.Actor.Uncharge` + 在 `OnAgentExit` 钩子里按 child.EffectiveQuota 把每桶未消耗余量回流到 parent.bucket。可观察：carve 30k 给 sub，sub 用 5k 退出后，parent 的 `hive team` 余量从 -25k 回到 -5k。
 - [x] ~~**`peer_call` 在 workflow-runner**~~ —— 已完成：awaiter 抽到 `internal/peerawait/` 共享包；workflow-runner 也有 peer-router goroutine + awaiter，flow.json / planner 可发 `peer_call` / `peer_call_many` 步骤，结果落到 `$steps.<id>.payload`。见 `examples/workflow-peer-call/`（kind: workflow → peer_call → kind: skill 的最小 demo）。
-- [ ] **跨 Room Conversation**：Conversation 当前 Room-scoped；通过 Volume 桥接两个 Room 的 transcript 是自然延伸（类比已有的跨 Room events）。
+- [x] ~~**跨 Room Conversation**~~ —— 已完成：Conversation.Members 显式声明 (room_id, agent_name) 对；daemon 用 in-memory convIndex 做 room-agnostic 查找；新增 room.Hooks.PeerSendForward 把跨 Room 的 peer/send 转发给目标 home Room 的 router，transcript 仍持久化到单一 owner Room 目录。Demo: `examples/cross-room-demo/`（chatter-a in Room A ↔ chatter-b in Room B，验证 round counter + 双向路由）。
 - [ ] **HTTP UI 鉴权**：默认 `127.0.0.1:8910` 只监本地。要远程访问得加 token / mTLS。
 - [ ] **HTTP UI hire/fire 控件**：当前 UI 只读，能创建 conversation 但不能直接 hire 新 agent。
 - [ ] **seccomp-bpf syscall 白名单**：生产级沙箱补强，防止内核漏洞提权。
