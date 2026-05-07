@@ -24,7 +24,6 @@
 <header class="bg-white border-b border-slate-200 sticky top-0 z-20">
   <div class="max-w-[1400px] mx-auto px-4 py-3 flex items-center gap-4">
     <h1 class="text-lg font-bold tracking-tight">🐝 Hive</h1>
-    <select id="room-select" class="border border-slate-300 rounded px-2 py-1 text-sm bg-white"></select>
     <span id="conn-status" class="text-xs text-slate-500 ml-auto"></span>
   </div>
   <nav class="max-w-[1400px] mx-auto px-4 flex gap-1 -mb-px">
@@ -34,7 +33,16 @@
   </nav>
 </header>
 
-<main class="max-w-[1400px] mx-auto p-4">
+<!-- Main split: fixed-width Room sidebar on the left, tab panels on the right.
+     The sidebar lists every Room with click-to-switch + pencil-to-rename. -->
+<div class="max-w-[1400px] mx-auto flex">
+<aside class="w-[220px] shrink-0 border-r border-slate-200 bg-slate-50/60 px-2 py-3 overflow-y-auto" style="min-height:calc(100vh - 92px);">
+  <div class="text-[10px] font-medium text-slate-500 uppercase tracking-wide mb-1.5 px-1 flex items-center gap-1">
+    <span>Rooms</span><span id="room-count" class="text-slate-400 normal-case"></span>
+  </div>
+  <div id="room-sidebar" class="space-y-1"></div>
+</aside>
+<main class="flex-1 min-w-0 p-4">
 
   <!-- ── Conversations tab ──────────────────────────────────────────── -->
   <section id="tab-conversations" class="tab-panel">
@@ -127,6 +135,7 @@
     </div>
   </section>
 </main>
+</div><!-- end Main split flex -->
 
 <!-- ── New conversation modal ────────────────────────────────────────── -->
 <div id="new-conv-modal" class="fixed inset-0 bg-black/40 hidden items-center justify-center z-30">
@@ -195,6 +204,9 @@ const state = {
   // doesn't refetch on every room-pick within one modal session.
   xroomChips: [],           // [{room_id, agent_name}]
   roomDetailCache: {},      // room_id → RoomDetail
+  // Sidebar inline-rename: when set, the matching room renders an
+  // <input> instead of its name span. Cleared on commit/cancel.
+  editingRoomID: null,
 };
 
 // Stable per-agent color palette (10 distinct hues, hashed by name).
@@ -230,7 +242,7 @@ async function bootstrap() {
   try {
     state.rooms = await api('/api/rooms');
     state.volumes = await api('/api/volumes');
-    renderRoomSelect();
+    renderRoomSidebar();
     if (state.rooms.length > 0) {
       await selectRoom(state.rooms[0].room_id);
     } else {
@@ -242,34 +254,110 @@ async function bootstrap() {
   }
 }
 
-function renderRoomSelect() {
-  const sel = document.getElementById('room-select');
-  sel.innerHTML = '';
+// renderRoomSidebar paints the left aside. Each room is a clickable
+// card with a pencil button for inline rename. The active room is
+// highlighted with a left border + tinted background.
+function renderRoomSidebar() {
+  const wrap = document.getElementById('room-sidebar');
+  const countEl = document.getElementById('room-count');
+  countEl.textContent = state.rooms.length ? `· ${state.rooms.length}` : '';
+  wrap.innerHTML = '';
   if (state.rooms.length === 0) {
-    sel.innerHTML = '<option>(no rooms)</option>';
-    sel.disabled = true;
+    wrap.innerHTML = '<div class="text-xs text-slate-400 italic px-1 py-2">no rooms hired<br>run <code>hive hire -f …</code></div>';
     return;
   }
-  sel.disabled = false;
   for (const r of state.rooms) {
-    const opt = document.createElement('option');
-    opt.value = r.room_id;
-    const counts = r.conv_counts || {};
-    const total = Object.values(counts).reduce((a,b)=>a+b, 0);
-    opt.textContent = `${r.name}  (${total} convs)`;
-    sel.appendChild(opt);
+    wrap.appendChild(roomSidebarItem(r));
   }
 }
 
-document.getElementById('room-select').addEventListener('change', e => selectRoom(e.target.value));
+function roomSidebarItem(r) {
+  const active = r.room_id === state.currentRoomID;
+  const editing = r.room_id === state.editingRoomID;
+  const counts = r.conv_counts || {};
+  const total = Object.values(counts).reduce((a,b)=>a+b, 0);
+  const item = document.createElement('div');
+  item.className = (active
+    ? 'border-l-4 border-blue-500 bg-blue-50 '
+    : 'border-l-4 border-transparent hover:bg-slate-100 ')
+    + 'rounded-r px-2 py-1.5 cursor-pointer group';
+  if (editing) {
+    // Inline rename input. Enter → commit, Escape/blur → cancel.
+    item.innerHTML = `
+      <input type="text" maxlength="64" value="${escapeHtml(r.name)}"
+        class="w-full border border-blue-400 rounded px-1 py-0.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400">
+      <div class="text-[10px] text-slate-400 mt-0.5 font-mono truncate" title="${escapeHtml(r.room_id)}">${escapeHtml(r.room_id)}</div>`;
+    setTimeout(() => {
+      const inp = item.querySelector('input');
+      inp.focus();
+      inp.select();
+      let done = false;
+      inp.addEventListener('keydown', async e => {
+        if (e.key === 'Enter') { done = true; await commitRename(r.room_id, inp.value); }
+        else if (e.key === 'Escape') { done = true; cancelRename(); }
+      });
+      inp.addEventListener('blur', () => { if (!done) cancelRename(); });
+    }, 0);
+    return item;
+  }
+  item.innerHTML = `
+    <div class="flex items-center gap-1">
+      <span class="font-medium text-sm flex-1 truncate" title="${escapeHtml(r.name)}">${escapeHtml(r.name)}</span>
+      <button class="rename-btn opacity-0 group-hover:opacity-100 text-slate-400 hover:text-blue-600 text-xs px-1" title="Rename">✎</button>
+    </div>
+    <div class="text-[10px] text-slate-500 flex items-center gap-1 badge">
+      <span>${total} ${total === 1 ? 'conv' : 'convs'}</span>
+      <span class="text-slate-300 truncate" title="${escapeHtml(r.room_id)}">· ${escapeHtml(r.room_id.slice(-12))}</span>
+    </div>`;
+  // Click anywhere except the pencil → switch room.
+  item.addEventListener('click', e => {
+    if (e.target.classList.contains('rename-btn')) return;
+    if (r.room_id !== state.currentRoomID) selectRoom(r.room_id);
+  });
+  item.querySelector('.rename-btn').addEventListener('click', e => {
+    e.stopPropagation();
+    state.editingRoomID = r.room_id;
+    renderRoomSidebar();
+  });
+  return item;
+}
+
+async function commitRename(roomID, rawName) {
+  const name = (rawName || '').trim();
+  if (!name) { cancelRename(); return; }
+  try {
+    const res = await api(`/api/rooms/${roomID}/rename`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({name}),
+    });
+    // Patch state.rooms in place, re-sort to match backend's (name, id) order
+    // so the sidebar reflows without a full refetch.
+    const i = state.rooms.findIndex(r => r.room_id === roomID);
+    if (i >= 0) state.rooms[i].name = res.name;
+    state.rooms.sort((a,b) => a.name === b.name ? (a.room_id < b.room_id ? -1 : 1) : (a.name < b.name ? -1 : 1));
+    state.editingRoomID = null;
+    renderRoomSidebar();
+    if (roomID === state.currentRoomID) {
+      state.currentRoom.name = res.name;
+      document.getElementById('conv-room-tag').textContent = res.name;
+    }
+  } catch (e) {
+    alert('Rename failed: ' + e.message);
+    cancelRename();
+  }
+}
+
+function cancelRename() {
+  state.editingRoomID = null;
+  renderRoomSidebar();
+}
 
 async function selectRoom(roomID) {
   state.currentRoomID = roomID;
-  document.getElementById('room-select').value = roomID;
-
   state.currentRoom = await api('/api/rooms/' + roomID);
   document.getElementById('conv-room-tag').textContent = state.currentRoom.name;
 
+  renderRoomSidebar(); // re-paint to update active highlight
   await reloadConversations();
   renderTeam();
   subscribeSSE(roomID);
@@ -892,11 +980,13 @@ function formatBytes(n) {
 // ── Boot ──────────────────────────────────────────────────────────
 bootstrap();
 // Periodic room-list refresh to pick up newly-hired rooms (low-cost
-// since the page is tiny).
+// since the page is tiny). Skip while a rename input is open so the
+// user's edit doesn't get clobbered mid-typing.
 setInterval(async () => {
+  if (state.editingRoomID) return;
   try {
     state.rooms = await api('/api/rooms');
-    renderRoomSelect();
+    renderRoomSidebar();
   } catch {}
 }, 5000);
 
