@@ -39,6 +39,7 @@
 <aside class="w-[220px] shrink-0 border-r border-slate-200 bg-slate-50/60 px-2 py-3 overflow-y-auto" style="min-height:calc(100vh - 92px);">
   <div class="text-[10px] font-medium text-slate-500 uppercase tracking-wide mb-1.5 px-1 flex items-center gap-1">
     <span>Rooms</span><span id="room-count" class="text-slate-400 normal-case"></span>
+    <button id="room-refresh" class="ml-auto text-slate-400 hover:text-blue-600 text-sm leading-none px-1" title="Refresh now">↻</button>
   </div>
   <div id="room-sidebar" class="space-y-1"></div>
 </aside>
@@ -46,6 +47,18 @@
 
   <!-- ── Conversations tab ──────────────────────────────────────────── -->
   <section id="tab-conversations" class="tab-panel">
+    <!-- Empty-state hint: shown when no Room is selected (typical
+         on a fresh daemon before the first hire). The actual kanban
+         + new-conv button below is hidden via #conv-main-block. -->
+    <div id="conv-empty-hint" class="hidden bg-white border border-dashed border-slate-300 rounded-lg p-8 text-center">
+      <div class="text-3xl mb-2">🐝</div>
+      <div class="text-sm font-medium text-slate-700">No Room selected</div>
+      <div class="text-xs text-slate-500 mt-2 leading-relaxed">
+        Run <code class="bg-slate-100 px-1.5 py-0.5 rounded font-mono text-slate-700">hive hire -f hivefiles/&lt;file&gt;.yaml</code> in another shell.<br>
+        New Rooms appear in the sidebar within ~2 seconds and are auto-selected when this is your first one.
+      </div>
+    </div>
+    <div id="conv-main-block">
     <div class="flex items-center justify-between mb-3">
       <div class="text-sm text-slate-600">
         <span id="conv-room-tag" class="font-medium"></span>
@@ -98,6 +111,7 @@
       </div>
       <div id="timeline-body" class="p-4 space-y-2 max-h-[520px] overflow-y-auto scrollbar font-mono text-xs"></div>
     </div>
+    </div><!-- /conv-main-block -->
   </section>
 
   <!-- ── Volumes tab ─────────────────────────────────────────────────── -->
@@ -243,14 +257,35 @@ async function bootstrap() {
     state.rooms = await api('/api/rooms');
     state.volumes = await api('/api/volumes');
     renderRoomSidebar();
-    if (state.rooms.length > 0) {
-      await selectRoom(state.rooms[0].room_id);
-    } else {
-      setStatus('no rooms hired — run `hive hire -f ...` first', true);
-    }
+    await maybeAutoSelectFirst();
+    setEmptyState();
     renderVolumeList();
   } catch (e) {
     setStatus('connect failed: ' + e.message, true);
+  }
+}
+
+// maybeAutoSelectFirst auto-picks the first Room in state.rooms when
+// there's no current selection. Runs on bootstrap and on every poll
+// tick — covers the cold-start case where the user opens the UI
+// before running `hive hire`, and a Room appears later via polling.
+// No-op when a Room is already selected, so existing user navigation
+// is never overridden.
+async function maybeAutoSelectFirst() {
+  if (state.currentRoomID) return;
+  if (state.rooms.length === 0) return;
+  await selectRoom(state.rooms[0].room_id);
+}
+
+// setEmptyState toggles the conversations panel between the empty-
+// state hint (shown when no Room is selected) and the normal kanban.
+// Called on bootstrap completion and on every selection change.
+function setEmptyState() {
+  const empty = !state.currentRoomID;
+  document.getElementById('conv-empty-hint').classList.toggle('hidden', !empty);
+  document.getElementById('conv-main-block').classList.toggle('hidden', empty);
+  if (empty) {
+    setStatus('no Rooms — run `hive hire -f ...` to add one', true);
   }
 }
 
@@ -358,10 +393,26 @@ async function selectRoom(roomID) {
   document.getElementById('conv-room-tag').textContent = state.currentRoom.name;
 
   renderRoomSidebar(); // re-paint to update active highlight
+  setEmptyState();     // hide empty hint, show kanban
+  setStatus('live');
   await reloadConversations();
   renderTeam();
   subscribeSSE(roomID);
 }
+
+// refreshRooms is the body the periodic poll AND the manual "↻"
+// button share. Skips while an inline rename is open so the user's
+// in-flight edit isn't clobbered.
+async function refreshRooms() {
+  if (state.editingRoomID) return;
+  try {
+    state.rooms = await api('/api/rooms');
+    renderRoomSidebar();
+    await maybeAutoSelectFirst();
+  } catch {}
+}
+
+document.getElementById('room-refresh').onclick = refreshRooms;
 
 async function reloadConversations() {
   if (!state.currentRoomID) return;
@@ -980,15 +1031,10 @@ function formatBytes(n) {
 // ── Boot ──────────────────────────────────────────────────────────
 bootstrap();
 // Periodic room-list refresh to pick up newly-hired rooms (low-cost
-// since the page is tiny). Skip while a rename input is open so the
-// user's edit doesn't get clobbered mid-typing.
-setInterval(async () => {
-  if (state.editingRoomID) return;
-  try {
-    state.rooms = await api('/api/rooms');
-    renderRoomSidebar();
-  } catch {}
-}, 5000);
+// since the page is tiny). 2s feels near-instant when waiting for a
+// hire to land. refreshRooms() itself guards against in-flight edits
+// and auto-selects when transitioning from 0 → N rooms.
+setInterval(refreshRooms, 2000);
 
 </script>
 </body>
