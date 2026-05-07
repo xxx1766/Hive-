@@ -300,6 +300,33 @@ func TestSummarize(t *testing.T) {
 	}
 }
 
+// TestSummary_PreservesMembers locks the projection: cross-Room conv
+// summaries carry Members through so the kanban can render the
+// "↔ N rooms" badge without fetching the full transcript per card.
+func TestSummary_PreservesMembers(t *testing.T) {
+	c := &Conversation{
+		ID: "x", RoomID: "owner", InitialTarget: "a",
+		Members: []Member{
+			{RoomID: "owner", AgentName: "a"},
+			{RoomID: "other", AgentName: "b"},
+		},
+	}
+	sum := c.Summarize()
+	if len(sum.Members) != 2 {
+		t.Fatalf("Members lost: %+v", sum.Members)
+	}
+	if sum.Members[0] != (Member{RoomID: "owner", AgentName: "a"}) ||
+		sum.Members[1] != (Member{RoomID: "other", AgentName: "b"}) {
+		t.Errorf("Members order/contents wrong: %+v", sum.Members)
+	}
+
+	// And the omitempty contract: no Members ⇒ nil slice in JSON.
+	plain := (&Conversation{ID: "y", RoomID: "owner", InitialTarget: "a"}).Summarize()
+	if plain.Members != nil {
+		t.Errorf("expected nil Members for legacy conv, got %+v", plain.Members)
+	}
+}
+
 func TestLoadByID_FindsAcrossRooms(t *testing.T) {
 	s := NewStore(roomsDir(t))
 	if err := s.Create(&Conversation{ID: "x1", RoomID: "room-A", InitialTarget: "a"}); err != nil {

@@ -183,6 +183,7 @@ func (d *Daemon) Register(srv *ipc.Server) {
 	srv.Handle(ipc.MethodRoomStop, d.handleRoomStop)
 	srv.Handle(ipc.MethodRoomTeam, d.handleRoomTeam)
 	srv.Handle(ipc.MethodRoomLogs, d.handleRoomLogs)
+	srv.Handle(ipc.MethodRoomRename, d.handleRoomRename)
 	srv.Handle(ipc.MethodAgentHire, d.handleAgentHire)
 	srv.Handle(ipc.MethodRoomRun, d.handleRoomRun)
 	srv.Handle(ipc.MethodConversationCreate, d.handleConversationCreate)
@@ -574,6 +575,16 @@ func (d *Daemon) handleRoomList(ctx context.Context, _ json.RawMessage, _ ipc.No
 	for _, r := range d.rooms {
 		out = append(out, r.Ref())
 	}
+	// Go map iteration is randomized; sort by (Name, RoomID) so the CLI
+	// and the UI sidebar show a stable order across calls. RoomID has
+	// format "<name>-<unix>" so the tiebreak is chronological within a
+	// name group.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].RoomID < out[j].RoomID
+	})
 	return ipc.RoomListResult{Rooms: out}, nil
 }
 
@@ -606,6 +617,35 @@ func (d *Daemon) handleRoomStop(ctx context.Context, params json.RawMessage, _ i
 		log.Printf("hived: delete state for room %s: %v", p.RoomID, err)
 	}
 	return struct{}{}, nil
+}
+
+// handleRoomRename mutates a Room's display Name. RoomID stays untouched
+// (it's a stable router key + dir name); only the human-facing label
+// changes. Persisted via the existing snapshotFor → roomstate.Save path
+// so the rename survives daemon restart.
+func (d *Daemon) handleRoomRename(ctx context.Context, params json.RawMessage, _ ipc.NotifyFunc) (any, error) {
+	var p ipc.RoomRenameParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, protocol.NewError(protocol.ErrCodeInvalidParams, err.Error())
+	}
+	name := strings.TrimSpace(p.Name)
+	if name == "" {
+		return nil, protocol.NewError(protocol.ErrCodeInvalidParams, "name is required")
+	}
+	if len(name) > 64 {
+		return nil, protocol.NewError(protocol.ErrCodeInvalidParams, "name too long (max 64 chars)")
+	}
+	d.mu.Lock()
+	r, ok := d.rooms[p.RoomID]
+	if ok {
+		r.Name = name
+	}
+	d.mu.Unlock()
+	if !ok {
+		return nil, protocol.NewError(protocol.ErrCodeRoomNotFound, "room not found: "+p.RoomID)
+	}
+	d.persistRoom(r)
+	return ipc.RoomRenameResult{RoomID: r.ID, Name: name}, nil
 }
 
 func (d *Daemon) handleRoomTeam(ctx context.Context, params json.RawMessage, _ ipc.NotifyFunc) (any, error) {

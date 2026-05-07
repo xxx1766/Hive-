@@ -24,7 +24,6 @@
 <header class="bg-white border-b border-slate-200 sticky top-0 z-20">
   <div class="max-w-[1400px] mx-auto px-4 py-3 flex items-center gap-4">
     <h1 class="text-lg font-bold tracking-tight">🐝 Hive</h1>
-    <select id="room-select" class="border border-slate-300 rounded px-2 py-1 text-sm bg-white"></select>
     <span id="conn-status" class="text-xs text-slate-500 ml-auto"></span>
   </div>
   <nav class="max-w-[1400px] mx-auto px-4 flex gap-1 -mb-px">
@@ -34,7 +33,16 @@
   </nav>
 </header>
 
-<main class="max-w-[1400px] mx-auto p-4">
+<!-- Main split: fixed-width Room sidebar on the left, tab panels on the right.
+     The sidebar lists every Room with click-to-switch + pencil-to-rename. -->
+<div class="max-w-[1400px] mx-auto flex">
+<aside class="w-[220px] shrink-0 border-r border-slate-200 bg-slate-50/60 px-2 py-3 overflow-y-auto" style="min-height:calc(100vh - 92px);">
+  <div class="text-[10px] font-medium text-slate-500 uppercase tracking-wide mb-1.5 px-1 flex items-center gap-1">
+    <span>Rooms</span><span id="room-count" class="text-slate-400 normal-case"></span>
+  </div>
+  <div id="room-sidebar" class="space-y-1"></div>
+</aside>
+<main class="flex-1 min-w-0 p-4">
 
   <!-- ── Conversations tab ──────────────────────────────────────────── -->
   <section id="tab-conversations" class="tab-panel">
@@ -127,6 +135,7 @@
     </div>
   </section>
 </main>
+</div><!-- end Main split flex -->
 
 <!-- ── New conversation modal ────────────────────────────────────────── -->
 <div id="new-conv-modal" class="fixed inset-0 bg-black/40 hidden items-center justify-center z-30">
@@ -153,6 +162,21 @@
         <input type="checkbox" id="nc-autostart" checked>
         <span class="text-xs">Start immediately</span>
       </label>
+      <div class="border-t border-slate-200 pt-3">
+        <label class="flex items-center gap-2">
+          <input type="checkbox" id="nc-xroom">
+          <span class="text-xs font-medium text-slate-700">Cross-Room — invite agents from other Rooms</span>
+        </label>
+        <div id="nc-xroom-panel" class="hidden mt-2 space-y-2">
+          <div class="flex gap-1.5">
+            <select id="nc-xroom-room" class="border border-slate-300 rounded px-2 py-1 text-sm bg-white flex-1"></select>
+            <select id="nc-xroom-agent" class="border border-slate-300 rounded px-2 py-1 text-sm bg-white flex-1"></select>
+            <button id="nc-xroom-add" class="bg-slate-200 hover:bg-slate-300 px-2 py-1 rounded text-xs font-medium">+ Add</button>
+          </div>
+          <div id="nc-xroom-chips" class="flex flex-wrap gap-1"></div>
+          <p class="text-[10px] text-slate-500">Initial target is auto-included; add agents from other Rooms here.</p>
+        </div>
+      </div>
     </div>
     <div class="mt-4 flex justify-end gap-2">
       <button id="nc-cancel" class="px-3 py-1.5 text-sm border border-slate-300 rounded">Cancel</button>
@@ -174,6 +198,15 @@ const state = {
   selectedVolume: null,
   sse: null,
   agentColors: {},
+  // Cross-Room New-Conversation modal state. xroomChips holds the
+  // additional members the user has picked; roomDetailCache memoises
+  // GET /api/rooms/{id} responses so the modal's [Agent ▾] dropdown
+  // doesn't refetch on every room-pick within one modal session.
+  xroomChips: [],           // [{room_id, agent_name}]
+  roomDetailCache: {},      // room_id → RoomDetail
+  // Sidebar inline-rename: when set, the matching room renders an
+  // <input> instead of its name span. Cleared on commit/cancel.
+  editingRoomID: null,
 };
 
 // Stable per-agent color palette (10 distinct hues, hashed by name).
@@ -209,7 +242,7 @@ async function bootstrap() {
   try {
     state.rooms = await api('/api/rooms');
     state.volumes = await api('/api/volumes');
-    renderRoomSelect();
+    renderRoomSidebar();
     if (state.rooms.length > 0) {
       await selectRoom(state.rooms[0].room_id);
     } else {
@@ -221,34 +254,110 @@ async function bootstrap() {
   }
 }
 
-function renderRoomSelect() {
-  const sel = document.getElementById('room-select');
-  sel.innerHTML = '';
+// renderRoomSidebar paints the left aside. Each room is a clickable
+// card with a pencil button for inline rename. The active room is
+// highlighted with a left border + tinted background.
+function renderRoomSidebar() {
+  const wrap = document.getElementById('room-sidebar');
+  const countEl = document.getElementById('room-count');
+  countEl.textContent = state.rooms.length ? `· ${state.rooms.length}` : '';
+  wrap.innerHTML = '';
   if (state.rooms.length === 0) {
-    sel.innerHTML = '<option>(no rooms)</option>';
-    sel.disabled = true;
+    wrap.innerHTML = '<div class="text-xs text-slate-400 italic px-1 py-2">no rooms hired<br>run <code>hive hire -f …</code></div>';
     return;
   }
-  sel.disabled = false;
   for (const r of state.rooms) {
-    const opt = document.createElement('option');
-    opt.value = r.room_id;
-    const counts = r.conv_counts || {};
-    const total = Object.values(counts).reduce((a,b)=>a+b, 0);
-    opt.textContent = `${r.name}  (${total} convs)`;
-    sel.appendChild(opt);
+    wrap.appendChild(roomSidebarItem(r));
   }
 }
 
-document.getElementById('room-select').addEventListener('change', e => selectRoom(e.target.value));
+function roomSidebarItem(r) {
+  const active = r.room_id === state.currentRoomID;
+  const editing = r.room_id === state.editingRoomID;
+  const counts = r.conv_counts || {};
+  const total = Object.values(counts).reduce((a,b)=>a+b, 0);
+  const item = document.createElement('div');
+  item.className = (active
+    ? 'border-l-4 border-blue-500 bg-blue-50 '
+    : 'border-l-4 border-transparent hover:bg-slate-100 ')
+    + 'rounded-r px-2 py-1.5 cursor-pointer group';
+  if (editing) {
+    // Inline rename input. Enter → commit, Escape/blur → cancel.
+    item.innerHTML = `
+      <input type="text" maxlength="64" value="${escapeHtml(r.name)}"
+        class="w-full border border-blue-400 rounded px-1 py-0.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400">
+      <div class="text-[10px] text-slate-400 mt-0.5 font-mono truncate" title="${escapeHtml(r.room_id)}">${escapeHtml(r.room_id)}</div>`;
+    setTimeout(() => {
+      const inp = item.querySelector('input');
+      inp.focus();
+      inp.select();
+      let done = false;
+      inp.addEventListener('keydown', async e => {
+        if (e.key === 'Enter') { done = true; await commitRename(r.room_id, inp.value); }
+        else if (e.key === 'Escape') { done = true; cancelRename(); }
+      });
+      inp.addEventListener('blur', () => { if (!done) cancelRename(); });
+    }, 0);
+    return item;
+  }
+  item.innerHTML = `
+    <div class="flex items-center gap-1">
+      <span class="font-medium text-sm flex-1 truncate" title="${escapeHtml(r.name)}">${escapeHtml(r.name)}</span>
+      <button class="rename-btn opacity-0 group-hover:opacity-100 text-slate-400 hover:text-blue-600 text-xs px-1" title="Rename">✎</button>
+    </div>
+    <div class="text-[10px] text-slate-500 flex items-center gap-1 badge">
+      <span>${total} ${total === 1 ? 'conv' : 'convs'}</span>
+      <span class="text-slate-300 truncate" title="${escapeHtml(r.room_id)}">· ${escapeHtml(r.room_id.slice(-12))}</span>
+    </div>`;
+  // Click anywhere except the pencil → switch room.
+  item.addEventListener('click', e => {
+    if (e.target.classList.contains('rename-btn')) return;
+    if (r.room_id !== state.currentRoomID) selectRoom(r.room_id);
+  });
+  item.querySelector('.rename-btn').addEventListener('click', e => {
+    e.stopPropagation();
+    state.editingRoomID = r.room_id;
+    renderRoomSidebar();
+  });
+  return item;
+}
+
+async function commitRename(roomID, rawName) {
+  const name = (rawName || '').trim();
+  if (!name) { cancelRename(); return; }
+  try {
+    const res = await api(`/api/rooms/${roomID}/rename`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({name}),
+    });
+    // Patch state.rooms in place, re-sort to match backend's (name, id) order
+    // so the sidebar reflows without a full refetch.
+    const i = state.rooms.findIndex(r => r.room_id === roomID);
+    if (i >= 0) state.rooms[i].name = res.name;
+    state.rooms.sort((a,b) => a.name === b.name ? (a.room_id < b.room_id ? -1 : 1) : (a.name < b.name ? -1 : 1));
+    state.editingRoomID = null;
+    renderRoomSidebar();
+    if (roomID === state.currentRoomID) {
+      state.currentRoom.name = res.name;
+      document.getElementById('conv-room-tag').textContent = res.name;
+    }
+  } catch (e) {
+    alert('Rename failed: ' + e.message);
+    cancelRename();
+  }
+}
+
+function cancelRename() {
+  state.editingRoomID = null;
+  renderRoomSidebar();
+}
 
 async function selectRoom(roomID) {
   state.currentRoomID = roomID;
-  document.getElementById('room-select').value = roomID;
-
   state.currentRoom = await api('/api/rooms/' + roomID);
   document.getElementById('conv-room-tag').textContent = state.currentRoom.name;
 
+  renderRoomSidebar(); // re-paint to update active highlight
   await reloadConversations();
   renderTeam();
   subscribeSSE(roomID);
@@ -308,10 +417,23 @@ function convCard(c) {
   card.onclick = () => selectConversation(c.id);
   const created = c.created_at ? new Date(c.created_at).toLocaleTimeString() : '';
   const tag = c.tag || c.id.slice(0, 16);
+  // Cross-Room badge: shown when Members spans 2+ distinct Rooms.
+  // Members comes through Summary so we can render this without
+  // fetching the full transcript per card.
+  const xRoomCount = (() => {
+    const ms = c.members || [];
+    const rs = new Set();
+    for (const m of ms) rs.add(m.room_id);
+    return rs.size >= 2 ? rs.size : 0;
+  })();
+  const xRoomBadge = xRoomCount > 0
+    ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 badge" title="cross-Room conversation">↔ ${xRoomCount} rooms</span>`
+    : '';
   card.innerHTML = `
     <div class="flex items-start gap-2">
       <span class="text-[10px] font-mono px-1.5 py-0.5 rounded ${statusColor} badge">${c.status}</span>
       <span class="font-medium text-sm flex-1 truncate" title="${escapeHtml(tag)}">${escapeHtml(tag)}</span>
+      ${xRoomBadge}
     </div>
     <div class="mt-1 text-xs text-slate-500 flex items-center gap-2 badge">
       <span>→ <b style="color:${colorFor(c.initial_target)}">${escapeHtml(c.initial_target)}</b></span>
@@ -396,12 +518,37 @@ function renderTimeline() {
   body.scrollTop = body.scrollHeight;
 }
 
+// Build a name→roomID map from the selected conv's Members. Returns
+// null when this isn't a cross-Room conv — callers skip qualifier
+// rendering to keep single-Room transcripts visually identical.
+function xroomMemberMap() {
+  const c = state.selectedConv;
+  if (!c) return null;
+  const ms = c.members || [];
+  const rooms = new Set(ms.map(m => m.room_id));
+  if (rooms.size < 2) return null;
+  const map = {};
+  for (const m of ms) map[m.agent_name] = m.room_id;
+  return map;
+}
+
+// Short-form room label for in-line qualifiers — the room's display
+// name when known, falling back to the raw id (already short for
+// hash-suffixed rooms).
+function shortRoomLabel(roomID) {
+  if (!roomID) return '?';
+  const r = state.rooms.find(rr => rr.room_id === roomID);
+  return (r && r.name) || roomID;
+}
+
 function timelineEntry(m) {
   const el = document.createElement('div');
   const fromColor = colorFor(m.from);
   const ts = m.ts ? new Date(m.ts).toLocaleTimeString() : '';
   const fromTxt = m.from || '(creator)';
-  const toTxt = m.to ? ' → ' + m.to : '';
+  const xMap = xroomMemberMap();
+  const fromRoom = xMap && m.from ? xMap[m.from] : null;
+  const toRoom = xMap && m.to ? xMap[m.to] : null;
   const kindBadge = ({
     task_input:  'bg-slate-100 text-slate-700',
     peer:        'bg-blue-50 text-blue-700',
@@ -421,14 +568,23 @@ function timelineEntry(m) {
     }
   }
 
+  const fromLabel = fromRoom
+    ? `${escapeHtml(fromTxt)} <span class="text-purple-700 font-normal">· ${escapeHtml(shortRoomLabel(fromRoom))}</span>`
+    : escapeHtml(fromTxt);
+  const toLabel = m.to
+    ? (toRoom
+        ? ` → ${escapeHtml(m.to)} <span class="text-purple-700">· ${escapeHtml(shortRoomLabel(toRoom))}</span>`
+        : ` → ${escapeHtml(m.to)}`)
+    : '';
+
   el.className = 'flex gap-3 items-start py-1';
   el.innerHTML = `
     <div class="text-slate-400 w-20 shrink-0 badge">${ts}</div>
     <div class="text-slate-400 w-6 shrink-0 text-right badge">r${m.round}</div>
     <div class="flex-1 min-w-0">
       <div class="flex items-center gap-2 text-[11px]">
-        <span class="font-bold" style="color:${fromColor}">${escapeHtml(fromTxt)}</span>
-        ${m.to ? `<span class="text-slate-400">${escapeHtml(toTxt)}</span>` : ''}
+        <span class="font-bold" style="color:${fromColor}">${fromLabel}</span>
+        ${toLabel ? `<span class="text-slate-400">${toLabel}</span>` : ''}
         <span class="px-1.5 py-0.5 rounded text-[10px] ${kindBadge}">${m.kind}</span>
       </div>
       ${payloadStr ? `<pre class="payload mt-0.5 text-[11px] text-slate-700 bg-slate-50/60 rounded p-1.5 border border-slate-100">${escapeHtml(payloadStr)}</pre>` : ''}
@@ -460,9 +616,123 @@ document.getElementById('new-conv-btn').onclick = () => {
     opt.textContent = `${nm}${aliasNote}  [${m.rank}]`;
     sel.appendChild(opt);
   }
+  // Reset cross-Room widgets to a clean state every open: toggle off,
+  // panel hidden, chips emptied. Room dropdown is repopulated from
+  // state.rooms (filtered to exclude the currentRoom — those agents
+  // already live in the implicit initial-target pair).
+  document.getElementById('nc-xroom').checked = false;
+  document.getElementById('nc-xroom-panel').classList.add('hidden');
+  state.xroomChips = [];
+  renderXroomChips();
+  populateXroomRoomSelect();
   document.getElementById('new-conv-modal').classList.remove('hidden');
   document.getElementById('new-conv-modal').classList.add('flex');
 };
+
+// Cross-Room toggle — show/hide the picker panel.
+document.getElementById('nc-xroom').addEventListener('change', e => {
+  document.getElementById('nc-xroom-panel').classList.toggle('hidden', !e.target.checked);
+});
+
+// Populate the [Room ▾] dropdown with rooms other than currentRoom
+// (the currentRoom's target is already implicitly in members[]).
+function populateXroomRoomSelect() {
+  const sel = document.getElementById('nc-xroom-room');
+  sel.innerHTML = '';
+  const others = state.rooms.filter(r => r.room_id !== state.currentRoomID);
+  if (others.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '(no other rooms)';
+    sel.appendChild(opt);
+    sel.disabled = true;
+    document.getElementById('nc-xroom-agent').innerHTML = '';
+    document.getElementById('nc-xroom-add').disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  document.getElementById('nc-xroom-add').disabled = false;
+  for (const r of others) {
+    const opt = document.createElement('option');
+    opt.value = r.room_id;
+    opt.textContent = r.name || r.room_id;
+    sel.appendChild(opt);
+  }
+  // Auto-load the first room's agents.
+  loadXroomAgentsFor(others[0].room_id);
+}
+
+// On Room change, fetch (and cache) that room's members, then populate
+// the [Agent ▾] dropdown.
+document.getElementById('nc-xroom-room').addEventListener('change', e => {
+  loadXroomAgentsFor(e.target.value);
+});
+
+async function loadXroomAgentsFor(roomID) {
+  if (!roomID) return;
+  const sel = document.getElementById('nc-xroom-agent');
+  sel.innerHTML = '<option>(loading…)</option>';
+  let detail = state.roomDetailCache[roomID];
+  if (!detail) {
+    try {
+      detail = await api('/api/rooms/' + roomID);
+      state.roomDetailCache[roomID] = detail;
+    } catch (e) {
+      sel.innerHTML = '';
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '(failed: ' + e.message + ')';
+      sel.appendChild(opt);
+      return;
+    }
+  }
+  sel.innerHTML = '';
+  const members = detail.members || [];
+  if (members.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '(no members)';
+    sel.appendChild(opt);
+    return;
+  }
+  for (const m of members) {
+    const opt = document.createElement('option');
+    const nm = m.name || m.image;
+    opt.value = nm;
+    const aliasNote = (m.name && m.name !== m.image) ? ` (${m.image})` : '';
+    opt.textContent = `${nm}${aliasNote}  [${m.rank}]`;
+    sel.appendChild(opt);
+  }
+}
+
+// Add chip — silently de-dup; ignore empty selections.
+document.getElementById('nc-xroom-add').onclick = () => {
+  const room = document.getElementById('nc-xroom-room').value;
+  const agent = document.getElementById('nc-xroom-agent').value;
+  if (!room || !agent) return;
+  const dup = state.xroomChips.some(c => c.room_id === room && c.agent_name === agent);
+  if (dup) return;
+  state.xroomChips.push({room_id: room, agent_name: agent});
+  renderXroomChips();
+};
+
+function renderXroomChips() {
+  const wrap = document.getElementById('nc-xroom-chips');
+  wrap.innerHTML = '';
+  for (let i = 0; i < state.xroomChips.length; i++) {
+    const c = state.xroomChips[i];
+    const room = state.rooms.find(r => r.room_id === c.room_id);
+    const roomLabel = (room && room.name) || c.room_id;
+    const chip = document.createElement('span');
+    chip.className = 'inline-flex items-center gap-1 bg-purple-100 text-purple-800 text-xs px-2 py-0.5 rounded';
+    chip.innerHTML = `${escapeHtml(roomLabel)} / <b>${escapeHtml(c.agent_name)}</b> <button class="ml-1 text-purple-600 hover:text-purple-900" data-idx="${i}">×</button>`;
+    chip.querySelector('button').onclick = () => {
+      state.xroomChips.splice(i, 1);
+      renderXroomChips();
+    };
+    wrap.appendChild(chip);
+  }
+}
 document.getElementById('nc-cancel').onclick = closeModal;
 function closeModal() {
   const m = document.getElementById('new-conv-modal');
@@ -480,10 +750,21 @@ document.getElementById('nc-submit').onclick = async () => {
     try { inputObj = JSON.parse(inputRaw); }
     catch (e) { alert('Input is not valid JSON: ' + e.message); return; }
   }
+  // Cross-Room: assemble members[] from the implicit initial target plus
+  // every chip the user added. The daemon validates that members must
+  // include the initial target — making it explicit here keeps that
+  // invariant satisfied at the wire layer.
+  const body = {tag, target, input: inputObj, max_rounds: rounds};
+  if (document.getElementById('nc-xroom').checked && state.xroomChips.length > 0) {
+    body.members = [
+      {room_id: state.currentRoomID, agent_name: target},
+      ...state.xroomChips,
+    ];
+  }
   try {
     const res = await api(`/api/rooms/${state.currentRoomID}/conversations`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({tag, target, input: inputObj, max_rounds: rounds}),
+      body: JSON.stringify(body),
     });
     closeModal();
     if (autostart) {
@@ -699,11 +980,13 @@ function formatBytes(n) {
 // ── Boot ──────────────────────────────────────────────────────────
 bootstrap();
 // Periodic room-list refresh to pick up newly-hired rooms (low-cost
-// since the page is tiny).
+// since the page is tiny). Skip while a rename input is open so the
+// user's edit doesn't get clobbered mid-typing.
 setInterval(async () => {
+  if (state.editingRoomID) return;
   try {
     state.rooms = await api('/api/rooms');
-    renderRoomSelect();
+    renderRoomSidebar();
   } catch {}
 }, 5000);
 

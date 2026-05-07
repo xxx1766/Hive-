@@ -92,6 +92,19 @@ type RoomStopParams struct {
 	RoomID string `json:"room_id"`
 }
 
+// RoomRenameParams mutates a Room's display Name. RoomID is immutable
+// (it's the on-disk dir + router key), only the human-facing label is
+// editable. Daemon trims whitespace and rejects empty / overlong names.
+type RoomRenameParams struct {
+	RoomID string `json:"room_id"`
+	Name   string `json:"name"`
+}
+
+type RoomRenameResult struct {
+	RoomID string `json:"room_id"`
+	Name   string `json:"name"`
+}
+
 type RoomTeamParams struct {
 	RoomID string `json:"room_id"`
 }

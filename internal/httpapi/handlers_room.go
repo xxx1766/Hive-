@@ -34,6 +34,7 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 // Layout:
 //
 //	/api/rooms/{id}                              GET  RoomDetail
+//	/api/rooms/{id}/rename                       POST mutate display Name
 //	/api/rooms/{id}/conversations                GET  list / POST create
 //	/api/rooms/{id}/conversations/{cid}          GET  full record
 //	/api/rooms/{id}/conversations/{cid}/start    POST
@@ -61,6 +62,9 @@ func (s *Server) handleRoomScoped(w http.ResponseWriter, r *http.Request) {
 		}
 		s.serveRoomDetail(w, roomID)
 
+	case len(parts) == 2 && parts[1] == "rename":
+		s.handleRoomRename(w, r, roomID)
+
 	case len(parts) >= 2 && parts[1] == "conversations":
 		s.routeRoomConversations(w, r, roomID, parts[2:])
 
@@ -70,6 +74,33 @@ func (s *Server) handleRoomScoped(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// handleRoomRename POST /api/rooms/{id}/rename
+//
+//	body: {"name": "<new name>"}
+//	200:  {"room_id": "...", "name": "<new name>"}
+func (s *Server) handleRoomRename(w http.ResponseWriter, r *http.Request, roomID string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var p struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if s.renameRoom == nil {
+		http.Error(w, "rename not wired", http.StatusInternalServerError)
+		return
+	}
+	if err := s.renameRoom(roomID, p.Name); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"room_id": roomID, "name": strings.TrimSpace(p.Name)})
 }
 
 // serveRoomDetail returns Members + Volumes + summary block.

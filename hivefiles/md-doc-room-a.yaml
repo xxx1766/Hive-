@@ -1,0 +1,11 @@
+# Cross-Room md↔doc demo, Room A — md-to-doc only.
+# Pair with hivefiles/md-doc-room-b.yaml in a separate Room.
+room: md-doc-room-a
+entry: md-to-doc
+agents:
+  - image: md-to-doc:0.1.0
+    rank: staff
+    model: openai/gpt-5.4-mini
+    quota:
+      tokens:
+        "openai/gpt-5.4-mini": 16000
