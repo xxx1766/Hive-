@@ -1,0 +1,18 @@
+# Single-Room md↔doc demo: both converters in one Room.
+# UI tutorial uses this for the "+ New conversation" walkthrough
+# (no Cross-Room toggle needed).
+room: md-doc-single
+entry: md-to-doc
+agents:
+  - image: md-to-doc:0.1.0
+    rank: staff
+    model: openai/gpt-5.4-mini
+    quota:
+      tokens:
+        "openai/gpt-5.4-mini": 16000
+  - image: doc-to-md:0.1.0
+    rank: staff
+    model: openai/gpt-5.4-mini
+    quota:
+      tokens:
+        "openai/gpt-5.4-mini": 12000
