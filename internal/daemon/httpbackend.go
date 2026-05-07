@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	stdlog "log"
+	"sort"
 
 	"github.com/anne-x/hive/internal/httpapi"
 	"github.com/anne-x/hive/internal/ipc"
@@ -31,6 +32,14 @@ func (b *httpBackend) ListRoomRefs() []httpapi.RoomRef {
 			State:  ref.State,
 		})
 	}
+	// Match handleRoomList's stable order (name asc, RoomID asc tiebreak)
+	// so the UI sidebar doesn't shuffle on refresh.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].RoomID < out[j].RoomID
+	})
 	return out
 }
 

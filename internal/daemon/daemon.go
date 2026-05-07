@@ -574,6 +574,16 @@ func (d *Daemon) handleRoomList(ctx context.Context, _ json.RawMessage, _ ipc.No
 	for _, r := range d.rooms {
 		out = append(out, r.Ref())
 	}
+	// Go map iteration is randomized; sort by (Name, RoomID) so the CLI
+	// and the UI sidebar show a stable order across calls. RoomID has
+	// format "<name>-<unix>" so the tiebreak is chronological within a
+	// name group.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].RoomID < out[j].RoomID
+	})
 	return ipc.RoomListResult{Rooms: out}, nil
 }
 
