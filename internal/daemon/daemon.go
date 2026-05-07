@@ -54,6 +54,11 @@ type Daemon struct {
 	// + per-Room SSE bus for UI live updates.
 	convStore *conversation.Store
 	convBus   *conversation.Bus
+	// convIndex resolves convID → ownerRoomID without scanning disk.
+	// Built at startup from convStore.IndexByID(); updated by every
+	// successful conversationCreate. Required for cross-Room peer_send
+	// routing (the sender's Room doesn't always own the conv file).
+	convIndex *convIndex
 	// HTTP server for the embedded UI (non-fatal if it fails to bind).
 	httpAPI *httpapi.Server
 
@@ -126,6 +131,7 @@ func New() (*Daemon, error) {
 		aiToolProvider: aiProv,
 		convStore:      conversation.NewStore(ipc.RoomsDir()),
 		convBus:        conversation.NewBus(),
+		convIndex:      newConvIndex(nil),
 		quotaCtx:       qCtx,
 		quotaCancel:    qCancel,
 		rooms:          make(map[string]*room.Room),
@@ -146,6 +152,16 @@ func New() (*Daemon, error) {
 		log.Printf("conversation recovery: %v", err)
 	} else if n > 0 {
 		log.Printf("conversation recovery: marked %d active conversation(s) as interrupted", n)
+	}
+
+	// Hydrate the in-memory convID→ownerRoomID index from disk so the
+	// PeerSendForward hook can answer cross-Room routing queries
+	// without scanning. New convs from this point are added via Set
+	// from handleConversationCreate.
+	if seed, err := d.convStore.IndexByID(); err != nil {
+		log.Printf("conversation index: build failed: %v", err)
+	} else {
+		d.convIndex = newConvIndex(seed)
 	}
 
 	// HTTP UI server. Non-fatal if it can't bind — the IPC channel keeps

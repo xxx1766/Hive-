@@ -299,3 +299,72 @@ func TestSummarize(t *testing.T) {
 		t.Errorf("Summarize: %+v", sum)
 	}
 }
+
+func TestLoadByID_FindsAcrossRooms(t *testing.T) {
+	s := NewStore(roomsDir(t))
+	if err := s.Create(&Conversation{ID: "x1", RoomID: "room-A", InitialTarget: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Create(&Conversation{ID: "x2", RoomID: "room-B", InitialTarget: "b"}); err != nil {
+		t.Fatal(err)
+	}
+	c, err := s.LoadByID("x2")
+	if err != nil {
+		t.Fatalf("LoadByID(x2): %v", err)
+	}
+	if c.RoomID != "room-B" {
+		t.Errorf("expected owner room-B, got %s", c.RoomID)
+	}
+	if _, err := s.LoadByID("nonexistent"); !os.IsNotExist(err) {
+		t.Errorf("expected ErrNotExist, got %v", err)
+	}
+}
+
+func TestIndexByID(t *testing.T) {
+	s := NewStore(roomsDir(t))
+	for _, kv := range []struct{ id, room string }{
+		{"a", "room-1"}, {"b", "room-2"}, {"c", "room-1"},
+	} {
+		if err := s.Create(&Conversation{ID: kv.id, RoomID: kv.room, InitialTarget: "x"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx, err := s.IndexByID()
+	if err != nil {
+		t.Fatalf("IndexByID: %v", err)
+	}
+	if idx["a"] != "room-1" || idx["b"] != "room-2" || idx["c"] != "room-1" {
+		t.Errorf("index wrong: %+v", idx)
+	}
+	if len(idx) != 3 {
+		t.Errorf("index size: got %d want 3", len(idx))
+	}
+}
+
+func TestIsCrossRoom_AndFindMember(t *testing.T) {
+	cases := []struct {
+		members []Member
+		want    bool
+	}{
+		{nil, false},
+		{[]Member{{RoomID: "A", AgentName: "x"}}, false},
+		{[]Member{{RoomID: "A", AgentName: "x"}, {RoomID: "A", AgentName: "y"}}, false},
+		{[]Member{{RoomID: "A", AgentName: "x"}, {RoomID: "B", AgentName: "y"}}, true},
+	}
+	for i, tc := range cases {
+		c := &Conversation{Members: tc.members}
+		if got := c.IsCrossRoom(); got != tc.want {
+			t.Errorf("case %d IsCrossRoom: got %v want %v", i, got, tc.want)
+		}
+	}
+	c := &Conversation{Members: []Member{
+		{RoomID: "A", AgentName: "writer"},
+		{RoomID: "B", AgentName: "reviewer"},
+	}}
+	if m := c.FindMember("reviewer"); m == nil || m.RoomID != "B" {
+		t.Errorf("FindMember(reviewer): %+v", m)
+	}
+	if m := c.FindMember("missing"); m != nil {
+		t.Errorf("FindMember(missing) should return nil, got %+v", m)
+	}
+}

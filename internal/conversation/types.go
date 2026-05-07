@@ -8,8 +8,12 @@
 // every Append/Update so partial writes can never confuse readers, and a
 // daemon crash mid-write leaves the previous version in place.
 //
-// Conversations are bound to a single Room: no cross-Room transcripts
-// in v1 (would need cross-Volume routing — out of scope).
+// Conversations are usually bound to a single Room. The Members field
+// (added 2026-04) optionally pins explicit (room_id, agent_name) pairs;
+// when those pairs span multiple Rooms, the daemon's PeerSendForward
+// hook routes peer hops through the target's home-Room router instead
+// of the sender's. This is what makes cross-Room conversations work —
+// see internal/daemon/peer_forward.go for the routing pivot.
 package conversation
 
 import (
@@ -82,16 +86,29 @@ type Message struct {
 	Round   int             `json:"round"`           // 0 = initial input, 1+ = peer hops
 }
 
+// Member is an explicit (RoomID, AgentName) pair for a Conversation's
+// authorized participants. Used by cross-Room conversations to declare
+// which agents in which Rooms can exchange messages on this conv —
+// peer_send `to=<name>` is resolved against this list, and the daemon
+// routes through the target's home-Room router. When Members is empty
+// the conv is purely Room-local (legacy behaviour) and the sender's own
+// Room router handles routing as before.
+type Member struct {
+	RoomID    string `json:"room_id"`
+	AgentName string `json:"agent_name"`
+}
+
 // Conversation is the durable record. Messages are persisted inline in
 // the same JSON file — the round count and message length stay bounded
 // (8 default, 50 hard ceiling) so the whole file fits in a single read.
 type Conversation struct {
 	Version       int             `json:"version"`
 	ID            string          `json:"id"`
-	RoomID        string          `json:"room_id"`
+	RoomID        string          `json:"room_id"`                 // owner Room — where this file lives on disk
 	Tag           string          `json:"tag,omitempty"`           // UI-display name; default "<target>@<unix-ts>"
 	Status        Status          `json:"status"`
-	Participants  []string        `json:"participants,omitempty"`  // ordered as they joined
+	Participants  []string        `json:"participants,omitempty"`  // ordered as they joined; agent names only (display)
+	Members       []Member        `json:"members,omitempty"`       // cross-Room: explicit (room,agent) pairs; empty ⇒ legacy Room-local
 	InitialTarget string          `json:"initial_target"`          // first agent dispatched on Start
 	InitialInput  json.RawMessage `json:"initial_input,omitempty"`
 	MaxRounds     int             `json:"max_rounds"`
@@ -150,4 +167,33 @@ func (c *Conversation) addParticipant(name string) {
 		}
 	}
 	c.Participants = append(c.Participants, name)
+}
+
+// IsCrossRoom reports whether this conv has Members from multiple
+// distinct Rooms. A conv with no Members at all is considered local
+// (legacy); a conv with Members all in one Room is also local —
+// only multi-Room Members triggers the cross-Room routing pivot.
+func (c *Conversation) IsCrossRoom() bool {
+	if len(c.Members) < 2 {
+		return false
+	}
+	first := c.Members[0].RoomID
+	for _, m := range c.Members[1:] {
+		if m.RoomID != first {
+			return true
+		}
+	}
+	return false
+}
+
+// FindMember returns the (room, agent) Member matching agentName, or
+// nil if not present. Used by the daemon's PeerSendForward hook to
+// resolve the home Room of a `to:` target.
+func (c *Conversation) FindMember(agentName string) *Member {
+	for i := range c.Members {
+		if c.Members[i].AgentName == agentName {
+			return &c.Members[i]
+		}
+	}
+	return nil
 }

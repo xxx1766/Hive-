@@ -172,6 +172,77 @@ func (s *Store) ListByRoom(roomID string) ([]*Conversation, error) {
 	return out, nil
 }
 
+// LoadByID resolves a Conversation by ID alone, scanning every Room
+// directory under roomsDir until a match is found. Used by the
+// daemon's cross-Room routing path: when an agent in Room A peer_sends
+// on a conv whose owner is Room B, A's PeerSend handler can't easily
+// pass the right roomID to Load — LoadByID closes that gap.
+//
+// Slow on cold cache: O(rooms) directory listings. The daemon wraps
+// this with an in-memory convID→roomID index (see internal/daemon/
+// conv_index.go) so steady-state lookups are O(1).
+//
+// Returns os.ErrNotExist when the ID isn't found in any Room.
+func (s *Store) LoadByID(convID string) (*Conversation, error) {
+	rooms, err := os.ReadDir(s.roomsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, os.ErrNotExist
+		}
+		return nil, err
+	}
+	for _, r := range rooms {
+		if !r.IsDir() {
+			continue
+		}
+		c, err := s.Load(r.Name(), convID)
+		if err == nil {
+			return c, nil
+		}
+		if !os.IsNotExist(err) {
+			// Real error reading this candidate (corrupt JSON, permission
+			// denied, etc.) — keep scanning others; don't let a single
+			// bad file mask a valid one.
+			continue
+		}
+	}
+	return nil, os.ErrNotExist
+}
+
+// IndexByID enumerates every Conversation under roomsDir and returns
+// a convID→ownerRoomID map. Called once at daemon startup so the
+// in-memory index can answer cross-Room peer_send queries in O(1) for
+// the rest of the process lifetime. Subsequent Create() calls update
+// the index incrementally (handled in the daemon, not here).
+func (s *Store) IndexByID() (map[string]string, error) {
+	rooms, err := os.ReadDir(s.roomsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]string{}, nil
+		}
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, r := range rooms {
+		if !r.IsDir() {
+			continue
+		}
+		dir := s.dirFor(r.Name())
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+				continue
+			}
+			id := e.Name()[:len(e.Name())-len(".json")]
+			out[id] = r.Name()
+		}
+	}
+	return out, nil
+}
+
 // MarkActiveAsInterrupted sweeps roomsDir on daemon startup and flips
 // any conversations stuck in "active" to "interrupted" — the prior
 // daemon process died holding their state, so no in-flight runner can

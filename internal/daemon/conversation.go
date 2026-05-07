@@ -47,6 +47,7 @@ func (d *Daemon) handleConversationCreate(ctx context.Context, params json.RawMe
 	if err := d.convStore.Create(c); err != nil {
 		return nil, protocol.NewError(protocol.ErrCodeInternal, err.Error())
 	}
+	d.convIndex.Set(c.ID, c.RoomID)
 	d.publishConvEvent(p.RoomID, c.ID, conversation.EventConvCreated, c.Summarize())
 	return ipc.ConversationCreateResult{
 		ConvID: c.ID,
