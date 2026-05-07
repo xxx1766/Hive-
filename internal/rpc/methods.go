@@ -26,6 +26,12 @@ const (
 	MethodEventsSubscribe   = "events/subscribe"
 	MethodEventsUnsubscribe = "events/unsubscribe"
 	MethodAIToolInvoke = "ai_tool/invoke"
+	// MethodHireJunior lets a manager+ rank Agent spawn a subordinate at
+	// runtime. The daemon validates the caller's rank against the
+	// requested rank (rank.CanHire) and atomically carves the requested
+	// quota out of the caller's remaining budget so subordinates can
+	// never escalate the parent's effective allotment.
+	MethodHireJunior  = "hire/junior"
 	MethodTaskDone    = "task/done"
 	MethodTaskError   = "task/error"
 	MethodLog         = "log"

@@ -29,10 +29,14 @@ import (
 	"sync/atomic"
 )
 
-// Task is a work unit delivered by Hive.
+// Task is a work unit delivered by Hive. ConvID is non-empty when the
+// task was dispatched as the entry-point of a Conversation; the runner
+// should propagate it on outbound PeerSend(... WithConv(t.ConvID)) so
+// inter-Agent hops register on the right transcript.
 type Task struct {
-	ID    string
-	Input json.RawMessage
+	ID     string
+	Input  json.RawMessage
+	ConvID string
 
 	agent *Agent
 }
@@ -62,6 +66,26 @@ func (t *Task) Fail(code int, msg string) error {
 type PeerMessage struct {
 	From    string
 	Payload json.RawMessage
+	// ConvID, when non-empty, marks this message as a hop in a Conversation.
+	// Reply via PeerSend with WithConv(ConvID) so the round counter advances
+	// on the right transcript and the message lands in the persisted log.
+	ConvID string
+}
+
+// SendOpt customises an outbound peer/send. Today only WithConv exists;
+// keeping this as a variadic functional-options pattern means future
+// flags (priority, deadline, etc.) won't break callers.
+type SendOpt func(*sendOpts)
+
+type sendOpts struct {
+	convID string
+}
+
+// WithConv tags an outbound peer/send as a Conversation hop. The daemon
+// will increment the round counter on the matching transcript and reject
+// the call if the cap was already hit. Empty convID is a no-op.
+func WithConv(convID string) SendOpt {
+	return func(o *sendOpts) { o.convID = convID }
 }
 
 // Event is an inbound pub/sub event delivered via events/recv. FromRoom
@@ -284,9 +308,108 @@ func (a *Agent) FSList(ctx context.Context, path string) ([]FSEntry, error) {
 	return res.Entries, nil
 }
 
-// PeerSend delivers a message to another Agent in the same Room.
-func (a *Agent) PeerSend(ctx context.Context, to string, payload any) error {
-	return a.call(ctx, "peer/send", map[string]any{"to": to, "payload": payload}, nil)
+// HireJuniorOpts shapes the optional fields of HireJunior. Only Quota
+// is commonly set — daemon will reject the call if the parent's
+// remaining budget is below what's requested.
+type HireJuniorOpts struct {
+	// Tag is a UI label; defaults to the image name when empty.
+	Tag string
+	// Name is the in-room identity for the new subordinate. Defaults
+	// to the image name. Set this to a unique alias when hiring two
+	// instances of the same image (e.g. "reviewer-A" and "reviewer-B"
+	// both running paper-reviewer:0.1.0).
+	Name string
+	// Model overrides the manifest's default LLM model (HIVE_MODEL env).
+	Model string
+	// Quota tokens / api_calls carved out of the caller's remaining
+	// budget. Each key drains the parent's same-named bucket.
+	Quota *Quota
+	// Volumes the child should mount. Names must already exist in the
+	// daemon's volume manager.
+	Volumes []VolumeMount
+}
+
+// Quota mirrors the daemon's quota wire form. Tokens map keys are model
+// names ("gpt-4o-mini", "openai/gpt-5.4-mini"); APICalls keys are
+// endpoint categories ("http", "ai_tool:claude-code").
+type Quota struct {
+	Tokens   map[string]int
+	APICalls map[string]int
+}
+
+// VolumeMount declares one volume the new subordinate should see.
+type VolumeMount struct {
+	Name       string
+	Mode       string // "ro" or "rw"; defaults to "ro" daemon-side
+	Mountpoint string
+}
+
+// HireJunior spawns a subordinate Agent in the caller's Room and
+// returns its image name (so the caller can PeerSend / WithConv to it).
+// Manager+ rank only: the daemon validates rank.CanHire(self, requested)
+// and carves opts.Quota out of the parent's remaining budget atomically.
+//
+// Common usage in a coordinator pattern:
+//
+//	child, err := a.HireJunior(ctx, "paper-outline:0.1.0", "intern",
+//	    hive.HireJuniorOpts{Quota: &hive.Quota{Tokens: map[string]int{"gpt-4o-mini": 5000}}})
+//	if err != nil { ... }
+//	a.PeerSend(ctx, child, payload, hive.WithConv(convID))
+func (a *Agent) HireJunior(ctx context.Context, ref, rank string, opts ...HireJuniorOpts) (string, error) {
+	o := HireJuniorOpts{}
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	args := map[string]any{"ref": ref, "rank": rank}
+	if o.Tag != "" {
+		args["tag"] = o.Tag
+	}
+	if o.Name != "" {
+		args["name"] = o.Name
+	}
+	if o.Model != "" {
+		args["model"] = o.Model
+	}
+	if o.Quota != nil {
+		args["quota"] = map[string]any{
+			"tokens":    o.Quota.Tokens,
+			"api_calls": o.Quota.APICalls,
+		}
+	}
+	if len(o.Volumes) > 0 {
+		vols := make([]map[string]any, len(o.Volumes))
+		for i, v := range o.Volumes {
+			vols[i] = map[string]any{"name": v.Name, "mode": v.Mode, "mountpoint": v.Mountpoint}
+		}
+		args["volumes"] = vols
+	}
+	var res struct {
+		Name      string `json:"name"`
+		ImageName string `json:"image_name"`
+		Rank      string `json:"rank"`
+		Parent    string `json:"parent"`
+	}
+	if err := a.call(ctx, "hire/junior", args, &res); err != nil {
+		return "", err
+	}
+	// Return the in-room name (defaults to image name when no alias).
+	// Caller uses this as `to:` for subsequent peer_send / peer_call.
+	return res.Name, nil
+}
+
+// PeerSend delivers a message to another Agent in the same Room. Pass
+// WithConv(convID) to make this hop count toward a Conversation; without
+// it the message is ad-hoc (no transcript, no round budget).
+func (a *Agent) PeerSend(ctx context.Context, to string, payload any, opts ...SendOpt) error {
+	o := &sendOpts{}
+	for _, fn := range opts {
+		fn(o)
+	}
+	args := map[string]any{"to": to, "payload": payload}
+	if o.convID != "" {
+		args["conv_id"] = o.convID
+	}
+	return a.call(ctx, "peer/send", args, nil)
 }
 
 // ── Memory API (persistent KV, Room-private or Volume-shared) ────────────
@@ -447,10 +570,11 @@ func (a *Agent) readLoop() {
 			var p struct {
 				TaskID string          `json:"task_id"`
 				Input  json.RawMessage `json:"input,omitempty"`
+				ConvID string          `json:"conv_id,omitempty"`
 			}
 			_ = json.Unmarshal(m.Params, &p)
 			select {
-			case a.tasks <- &Task{ID: p.TaskID, Input: p.Input, agent: a}:
+			case a.tasks <- &Task{ID: p.TaskID, Input: p.Input, ConvID: p.ConvID, agent: a}:
 			case <-a.closed:
 				return
 			}
@@ -459,10 +583,11 @@ func (a *Agent) readLoop() {
 			var p struct {
 				From    string          `json:"from"`
 				Payload json.RawMessage `json:"payload"`
+				ConvID  string          `json:"conv_id"`
 			}
 			_ = json.Unmarshal(m.Params, &p)
 			select {
-			case a.peers <- &PeerMessage{From: p.From, Payload: p.Payload}:
+			case a.peers <- &PeerMessage{From: p.From, Payload: p.Payload, ConvID: p.ConvID}:
 			case <-a.closed:
 				return
 			}

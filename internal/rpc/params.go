@@ -5,17 +5,25 @@ import "encoding/json"
 // ── Hive → Agent ──────────────────────────────────────────────────────────
 
 // TaskRunParams is delivered when Hive wants the Agent to start working.
-// Input is an arbitrary JSON payload the Agent understands.
+// Input is an arbitrary JSON payload the Agent understands. ConvID is
+// non-empty when this task is the entry-point of a Conversation; the
+// Agent should pass it through on outbound peer/send so the daemon can
+// attribute the hop to that transcript.
 type TaskRunParams struct {
 	TaskID string          `json:"task_id"`
 	Goal   string          `json:"goal,omitempty"`
 	Input  json.RawMessage `json:"input,omitempty"`
+	ConvID string          `json:"conv_id,omitempty"`
 }
 
 // PeerRecvParams carries an inbound message from another Agent in the same Room.
+// ConvID propagates Conversation membership — when set, replies via peer/send
+// should include the same ConvID so the round counter advances on the right
+// transcript. Empty ConvID = ad-hoc peer message (not part of any Conversation).
 type PeerRecvParams struct {
-	From    string          `json:"from"`    // source Agent's image name
-	Payload json.RawMessage `json:"payload"` // opaque to Hive
+	From    string          `json:"from"`              // source Agent's image name
+	Payload json.RawMessage `json:"payload"`           // opaque to Hive
+	ConvID  string          `json:"conv_id,omitempty"` // non-empty = part of a Conversation
 }
 
 // EventsRecvParams is delivered to a subscribed Agent when another Agent
@@ -165,6 +173,7 @@ type AIToolInvokeResult struct {
 type PeerSendParams struct {
 	To      string          `json:"to"` // target Agent's image name (unique within Room)
 	Payload json.RawMessage `json:"payload"`
+	ConvID  string          `json:"conv_id,omitempty"` // non-empty = round counts toward a Conversation
 }
 
 // ── Agent → Hive: events (real-time pub/sub, Room-private or Volume-shared)
@@ -195,6 +204,57 @@ type EventsSubscribeResult struct {
 
 type EventsUnsubscribeParams struct {
 	SubID string `json:"sub_id"`
+}
+
+// ── Agent → Hive: auto-hire (manager+ spawns a subordinate) ───────────────
+
+// HireJuniorParams asks the daemon to spawn a subordinate Agent in the
+// caller's Room. Daemon validates rank.CanHire(self, requested), carves
+// Quota out of the caller's remaining budget atomically, and records
+// the subordinate's parent so daemon-restart recovery preserves the
+// tree.
+//
+// Volumes is the union of named volumes the child should mount. Daemon
+// allows any volume the parent could mount (no extra ACL): subordinates
+// inherit the parent's data access surface, which matches the
+// "delegation" mental model.
+type HireJuniorParams struct {
+	Ref     string                 `json:"ref"`              // image ref, e.g. "paper-outline:0.1.0"
+	Rank    string                 `json:"rank"`             // requested rank; daemon enforces strictly < self
+	Tag     string                 `json:"tag,omitempty"`    // UI label; default = image name
+	Name    string                 `json:"name,omitempty"`   // in-room alias; default = image name. Use when hiring two instances of the same image (reviewer-A / reviewer-B).
+	Model   string                 `json:"model,omitempty"`  // override manifest's default LLM model
+	Quota   *HireJuniorQuota       `json:"quota,omitempty"`  // amounts to carve from parent
+	Volumes []HireJuniorVolumeMount `json:"volumes,omitempty"`
+}
+
+// HireJuniorQuota mirrors rank.Quota's wire form. Each amount is the
+// HARD subordinate cap, deducted from the parent's remaining budget.
+type HireJuniorQuota struct {
+	Tokens   map[string]int `json:"tokens,omitempty"`
+	APICalls map[string]int `json:"api_calls,omitempty"`
+}
+
+// HireJuniorVolumeMount is the same shape as ipc.VolumeMountRef but
+// lives here because the rpc package (Agent-facing API) intentionally
+// doesn't import internal/ipc (CLI-facing API).
+type HireJuniorVolumeMount struct {
+	Name       string `json:"name"`
+	Mode       string `json:"mode,omitempty"`
+	Mountpoint string `json:"mountpoint"`
+}
+
+// HireJuniorResult tells the caller the resolved in-room name (so the
+// caller can `peer_send` to it), the underlying image, and the parent
+// for audit / logs.
+type HireJuniorResult struct {
+	// Name is the in-room identity — what to pass as `to:` in peer_send
+	// / peer_call. Defaults to ImageName but may be a custom alias when
+	// the request had a non-empty `name:` field.
+	Name      string `json:"name"`
+	ImageName string `json:"image_name"`
+	Rank      string `json:"rank"`
+	Parent    string `json:"parent"`
 }
 
 // ── Agent → Hive: task termination ────────────────────────────────────────

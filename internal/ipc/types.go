@@ -97,6 +97,12 @@ type RoomTeamParams struct {
 }
 
 type TeamMember struct {
+	// Name is the in-room identity — the key for peer/send routing,
+	// quota accounting, and log files. Defaults to ImageName when no
+	// alias was set at hire time. Two members with the same ImageName
+	// but different Names can coexist (the auto-hire-junior aliasing
+	// path).
+	Name      string         `json:"name"`
 	ImageName string         `json:"image"`
 	Rank      string         `json:"rank"`
 	State     string         `json:"state"`
@@ -194,4 +200,114 @@ type RoomStatusNotification struct {
 	Image  string         `json:"image,omitempty"`
 	Info   map[string]any `json:"info,omitempty"`
 	Time   string         `json:"time"`
+}
+
+// ── Conversation lifecycle ────────────────────────────────────────────────
+//
+// A Conversation is a multi-round Agent collaboration with persisted
+// transcript and round-cap enforcement. The lifecycle is:
+//
+//	create → planned → start → active → done | failed | cancelled | interrupted
+//
+// Cancellation reasons (carried in Error): "round_cap" (max_rounds hit),
+// user-initiated, or runner-reported failure.
+
+// ConversationCreateParams plans a new Conversation but does not dispatch
+// it. The actual dispatch happens via ConversationStart, which lets a UI
+// queue several conversations before kicking them off.
+//
+// For a cross-Room Conversation, populate Members with explicit
+// (room_id, agent_name) pairs spanning multiple Rooms. RoomID is
+// then the OWNER (the conv file lives there) — usually the room of
+// the initial Target. The daemon validates each member is hired in
+// its declared Room before creating the conv.
+type ConversationCreateParams struct {
+	RoomID    string                  `json:"room_id"`
+	Tag       string                  `json:"tag,omitempty"`         // human-friendly UI label; auto if empty
+	Target    string                  `json:"target"`                // initial Agent (image name) the conv targets
+	Input     json.RawMessage         `json:"input,omitempty"`       // initial task payload
+	MaxRounds int                     `json:"max_rounds,omitempty"`  // 0 ⇒ DefaultMaxRounds
+	Members   []ConversationMemberRef `json:"members,omitempty"`     // optional; cross-Room conv participants
+}
+
+// ConversationMemberRef is the wire form of conversation.Member —
+// duplicated here so internal/ipc stays free of an internal/conversation
+// import cycle. Daemon copies field-by-field on receive.
+type ConversationMemberRef struct {
+	RoomID    string `json:"room_id"`
+	AgentName string `json:"agent_name"`
+}
+
+type ConversationCreateResult struct {
+	ConvID string `json:"conv_id"`
+	Status string `json:"status"` // "planned"
+}
+
+type ConversationStartParams struct {
+	RoomID string `json:"room_id"`
+	ConvID string `json:"conv_id"`
+}
+
+type ConversationStartResult struct {
+	ConvID string `json:"conv_id"`
+	Status string `json:"status"` // "active"
+}
+
+type ConversationListParams struct {
+	RoomID string `json:"room_id"`
+}
+
+// ConversationSummary is the compact view used in list endpoints; the
+// full transcript is fetched separately via Get.
+type ConversationSummary struct {
+	ID            string `json:"id"`
+	RoomID        string `json:"room_id"`
+	Tag           string `json:"tag,omitempty"`
+	Status        string `json:"status"`
+	InitialTarget string `json:"initial_target"`
+	MaxRounds     int    `json:"max_rounds"`
+	RoundCount    int    `json:"round_count"`
+	MessageCount  int    `json:"message_count"`
+	CreatedAt     string `json:"created_at"`
+	StartedAt     string `json:"started_at,omitempty"`
+	FinishedAt    string `json:"finished_at,omitempty"`
+}
+
+type ConversationListResult struct {
+	RoomID        string                `json:"room_id"`
+	Conversations []ConversationSummary `json:"conversations"`
+}
+
+type ConversationGetParams struct {
+	RoomID string `json:"room_id"`
+	ConvID string `json:"conv_id"`
+}
+
+// ConversationGetResult is the full record (json-as-bytes — the daemon
+// hands the on-disk shape through unchanged so UI / CLI both deal with
+// the identical schema as conversation.Conversation).
+type ConversationGetResult struct {
+	Conversation json.RawMessage `json:"conversation"`
+}
+
+type ConversationCancelParams struct {
+	RoomID string `json:"room_id"`
+	ConvID string `json:"conv_id"`
+	Reason string `json:"reason,omitempty"`
+}
+
+type ConversationCancelResult struct {
+	ConvID string `json:"conv_id"`
+	Status string `json:"status"` // "cancelled"
+}
+
+// ConversationEventNotification is the payload of NotifyConversationEvt
+// pushed during `room/run` and on the new SSE `/api/rooms/{id}/events`
+// stream. Type names are stable strings (see internal/conversation/bus.go).
+type ConversationEventNotification struct {
+	Type    string          `json:"type"`
+	RoomID  string          `json:"room_id"`
+	ConvID  string          `json:"conv_id,omitempty"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+	Time    string          `json:"time"`
 }

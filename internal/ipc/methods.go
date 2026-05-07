@@ -23,10 +23,19 @@ const (
 	MethodRoomLogs = "room/logs" // snapshot of Agent stderr log files
 
 	MethodAgentHire = "agent/hire"
+
+	// Conversation lifecycle — multi-round Agent collaborations with
+	// transcript persistence and round-cap enforcement.
+	MethodConversationCreate = "conversation/create"
+	MethodConversationStart  = "conversation/start"
+	MethodConversationList   = "conversation/list"
+	MethodConversationGet    = "conversation/get"
+	MethodConversationCancel = "conversation/cancel"
 )
 
 // Notifications the daemon pushes during `room/run`.
 const (
-	NotifyRoomLog    = "room/log"    // structured log from an Agent
-	NotifyRoomStatus = "room/status" // state transitions (agent spawned, quota exceeded, etc.)
+	NotifyRoomLog          = "room/log"             // structured log from an Agent
+	NotifyRoomStatus       = "room/status"          // state transitions (agent spawned, quota exceeded, etc.)
+	NotifyConversationEvt  = "conversation/event"   // streamed Conversation lifecycle event for UI / SSE
 )

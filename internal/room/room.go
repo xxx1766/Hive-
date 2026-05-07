@@ -35,7 +35,20 @@ const (
 )
 
 // Member tracks a hired Agent within a Room.
+//
+// Name is the in-room identity — the key in r.members, the router
+// register key, the quota Agent field, the log filename, the value of
+// peer/send `to:` and so on. It defaults to Image.Name during Hire,
+// and can be overridden at hire time (via HireOpts.Name) so the same
+// image can be hired multiple times with distinct aliases (e.g.
+// reviewer-A and reviewer-B both running paper-reviewer:0.1.0).
+//
+// Image stays the manifest reference (name + version of the bytes on
+// disk) — the same Image can underpin many Members with different
+// Names. Don't conflate them: error messages may want "image X"
+// (debug context), the rest of the daemon wants "member N".
 type Member struct {
+	Name  string
 	Image image.Ref
 	Rank  *rank.Rank
 	// Model, when non-empty, overrides the manifest's default LLM model
@@ -56,6 +69,11 @@ type Member struct {
 	Volumes []ipc.VolumeMountRef
 	Conn    *agent.Conn
 	HiredAt time.Time
+	// Parent is the image name of the Agent that auto-hired this Member
+	// (via SDK HireJunior). Empty for top-level hires (CLI, Hivefile).
+	// Recovery preserves it so the subordinate-tree shape survives a
+	// daemon restart.
+	Parent string
 }
 
 // EffectiveQuota merges the Rank's default quota with any per-hire override.
@@ -121,13 +139,39 @@ type Hooks struct {
 	// AuthPeerSend is installed on the Router; returns non-nil *protocol.Error
 	// to reject a peer/send.
 	AuthPeerSend func(r *Room, from, to string) error
+	// PeerSendIntercept (when non-nil) is called BEFORE the router routes a
+	// peer/send. Use it for Conversation round-cap enforcement: if the
+	// hook returns non-nil, the peer/send fails with that error and the
+	// message is never delivered. Pure precondition check; no side effects.
+	PeerSendIntercept func(r *Room, from, to, convID string, payload json.RawMessage) error
+	// PeerSendDelivered (when non-nil) is called AFTER the router has
+	// successfully delivered a peer/recv to the target. Daemon uses it
+	// to append the message to the Conversation transcript and publish
+	// to the SSE bus. Fire-and-forget — return value ignored.
+	PeerSendDelivered func(r *Room, from, to, convID string, payload json.RawMessage)
+	// PeerSendForward (when non-nil) gets a chance to take over delivery
+	// of a peer/send entirely. If it returns handled=true, the local
+	// router is bypassed AND PeerSendDelivered is NOT fired (the hook
+	// is responsible for any transcript/event work it wants done).
+	// If handled=false, normal local-router delivery proceeds.
+	//
+	// This is the cross-Room pivot: when a conversation's Members
+	// reference an agent in a different Room, the daemon's hook
+	// resolves the target's home Room and dispatches through THAT
+	// Room's router instead of `r`'s. Same-Room and conv-less
+	// peer/send fall through (handled=false) so existing semantics
+	// don't shift.
+	PeerSendForward func(r *Room, from, to, convID string, payload json.RawMessage) (handled bool, err error)
 	// OnAgentExit fires after an Agent's process has been reaped and the
 	// router has unregistered it. The daemon uses this to drop any
 	// long-lived state keyed off the Conn — most notably event-bus
 	// subscriptions, which would otherwise leak across the Agent's
-	// lifetime. Conn is the same pointer the daemon held during hire,
-	// so it's safe to use as an identity key. Called at most once per Conn.
-	OnAgentExit func(imageName string, conn *agent.Conn)
+	// lifetime — and to refund any unused subordinate quota back to
+	// the parent (`m.Parent`). The Member pointer remains valid for
+	// the duration of this call (room.go's exit goroutine holds a local
+	// var) even though it's already been removed from r.members.
+	// Called at most once per Conn.
+	OnAgentExit func(r *Room, m *Member)
 }
 
 // New creates an idle Room with its rootfs directory.
@@ -215,6 +259,16 @@ type HireOpts struct {
 	// the Agent exits so ownership is unambiguous.
 	LogFile  io.WriteCloser
 	ExtraEnv []string
+	// Parent is the in-room name of the auto-hiring Agent. Empty for
+	// top-level hires (CLI / Hivefile). Threaded onto Member so the
+	// daemon can serialise the subordinate tree for restart recovery
+	// and surface it to UI / audit.
+	Parent string
+	// Name overrides the default in-room identity (which defaults to
+	// img.Manifest.Name). Empty ⇒ use the image name. Set when an
+	// auto-hiring caller wants two instances of the same image to
+	// coexist as e.g. "reviewer-A" / "reviewer-B".
+	Name string
 }
 
 // Hire spawns an Agent process and attaches it to this Room.
@@ -226,10 +280,19 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 	rk := opts.Rank
 	logFile := opts.LogFile
 	extraEnv := opts.ExtraEnv
+
+	// Member name defaults to the image name; HireOpts.Name lets the
+	// daemon plumb in an alias (e.g. reviewer-A / reviewer-B for two
+	// instances of paper-reviewer:0.1.0). Once set, this is the
+	// in-room identity for routing, quota, and log files.
+	name := opts.Name
+	if name == "" {
+		name = img.Manifest.Name
+	}
 	r.mu.Lock()
-	if _, dup := r.members[img.Manifest.Name]; dup {
+	if _, dup := r.members[name]; dup {
 		r.mu.Unlock()
-		return nil, fmt.Errorf("agent %s already hired in room %s", img.Manifest.Name, r.ID)
+		return nil, fmt.Errorf("agent %s already hired in room %s", name, r.ID)
 	}
 	r.mu.Unlock()
 
@@ -239,7 +302,12 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 	}
 	env := append(os.Environ(),
 		"HIVE_ROOM_ID="+r.ID,
+		// HIVE_AGENT_IMAGE keeps the manifest name (the bytes-on-disk
+		// identity) — useful for the agent to know what it is. The new
+		// HIVE_AGENT_NAME carries the in-room identity for any agent
+		// that wants to use it (e.g. logging "I am reviewer-A").
 		"HIVE_AGENT_IMAGE="+img.Manifest.Name,
+		"HIVE_AGENT_NAME="+name,
 	)
 	env = append(env, extraEnv...)
 	cmd.Env = env
@@ -249,9 +317,10 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 		cmd.Stderr = os.Stderr
 	}
 
-	conn := agent.New(img.Manifest.Name, cmd, initErrPipe)
+	conn := agent.New(name, cmd, initErrPipe)
 
 	member := &Member{
+		Name:          name,
 		Image:         img.Ref(),
 		Rank:          rk,
 		Model:         opts.Model,
@@ -260,6 +329,7 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 		Volumes:       opts.Volumes,
 		Conn:          conn,
 		HiredAt:       time.Now(),
+		Parent:        opts.Parent,
 	}
 
 	// Hooks install handlers BEFORE Start so the Agent can't race past them.
@@ -285,12 +355,12 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 	}
 
 	r.mu.Lock()
-	r.members[img.Manifest.Name] = member
+	r.members[name] = member
 	r.mu.Unlock()
-	r.router.Register(img.Manifest.Name, conn)
+	r.router.Register(name, conn)
 
 	if r.Hooks.OnStatus != nil {
-		r.Hooks.OnStatus("agent_spawned", img.Manifest.Name, map[string]any{"rank": rk.Name})
+		r.Hooks.OnStatus("agent_spawned", name, map[string]any{"rank": rk.Name, "image": img.Manifest.Name})
 	}
 
 	// Reap when the Agent exits. cmd.Wait (inside conn.waitLoop) has
@@ -299,9 +369,9 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 	// before the close hits.
 	go func() {
 		<-conn.Done()
-		r.router.Unregister(img.Manifest.Name)
+		r.router.Unregister(name)
 		r.mu.Lock()
-		delete(r.members, img.Manifest.Name)
+		delete(r.members, name)
 		r.mu.Unlock()
 		if logFile != nil {
 			_ = logFile.Close()
@@ -311,14 +381,14 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 		// the canonical identity for this Agent. OnStatus may surface
 		// the exit to a CLI tail and we want bookkeeping done by then.
 		if r.Hooks.OnAgentExit != nil {
-			r.Hooks.OnAgentExit(img.Manifest.Name, conn)
+			r.Hooks.OnAgentExit(r, member)
 		}
 		if r.Hooks.OnStatus != nil {
-			info := map[string]any{}
+			info := map[string]any{"image": img.Manifest.Name}
 			if err := conn.ExitErr(); err != nil {
 				info["error"] = err.Error()
 			}
-			r.Hooks.OnStatus("agent_exited", img.Manifest.Name, info)
+			r.Hooks.OnStatus("agent_exited", name, info)
 		}
 	}()
 
@@ -326,8 +396,10 @@ func (r *Room) Hire(img *image.Image, opts HireOpts) (*Member, error) {
 }
 
 // Run dispatches a task to one Agent in the Room and waits for it to
-// report task/done or task/error.
-func (r *Room) Run(ctx context.Context, targetImage string, task json.RawMessage) (json.RawMessage, error) {
+// report task/done or task/error. Pass convID="" for ad-hoc runs;
+// non-empty convID flags the dispatch as the entry-point of a
+// Conversation so the runner can echo it back on outbound peer/send.
+func (r *Room) Run(ctx context.Context, targetImage string, task json.RawMessage, convID string) (json.RawMessage, error) {
 	m := r.Member(targetImage)
 	if m == nil {
 		return nil, fmt.Errorf("agent %s not found in room %s", targetImage, r.ID)
@@ -362,6 +434,7 @@ func (r *Room) Run(ctx context.Context, targetImage string, task json.RawMessage
 	_, err := m.Conn.Call(ctx, rpc.MethodTaskRun, rpc.TaskRunParams{
 		TaskID: taskID,
 		Input:  task,
+		ConvID: convID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dispatch task/run: %w", err)
@@ -423,7 +496,7 @@ func (r *Room) installCoreHandlers(m *Member) {
 	m.Conn.Handle(rpc.MethodLog, func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p rpc.LogParams
 		if err := json.Unmarshal(params, &p); err == nil && r.Hooks.OnLog != nil {
-			r.Hooks.OnLog(m.Image.Name, p)
+			r.Hooks.OnLog(m.Name, p)
 		}
 		return struct{}{}, nil
 	})
@@ -433,8 +506,33 @@ func (r *Room) installCoreHandlers(m *Member) {
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, err
 		}
-		if err := r.router.Send(ctx, m.Image.Name, p.To, p.Payload); err != nil {
+		// Conversation hooks: round-cap precheck, then forward (cross-
+		// Room delivery), then local routing + post-success append. All
+		// hooks no-op when the daemon hasn't installed them or when
+		// p.ConvID == "" (peer messages outside any Conversation).
+		if r.Hooks.PeerSendIntercept != nil {
+			if err := r.Hooks.PeerSendIntercept(r, m.Name, p.To, p.ConvID, p.Payload); err != nil {
+				return nil, err
+			}
+		}
+		if r.Hooks.PeerSendForward != nil {
+			handled, err := r.Hooks.PeerSendForward(r, m.Name, p.To, p.ConvID, p.Payload)
+			if err != nil {
+				return nil, err
+			}
+			if handled {
+				// Hook took ownership — it has already dispatched (or
+				// failed deterministically) and emitted any transcript
+				// /event work itself. Skip local router AND
+				// PeerSendDelivered.
+				return struct{}{}, nil
+			}
+		}
+		if err := r.router.Send(ctx, m.Name, p.To, p.ConvID, p.Payload); err != nil {
 			return nil, err
+		}
+		if r.Hooks.PeerSendDelivered != nil {
+			r.Hooks.PeerSendDelivered(r, m.Name, p.To, p.ConvID, p.Payload)
 		}
 		return struct{}{}, nil
 	})

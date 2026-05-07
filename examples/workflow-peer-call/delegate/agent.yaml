@@ -1,0 +1,8 @@
+name: delegate
+version: 0.1.0
+kind: workflow
+workflow: flow.json
+rank: staff
+tools: [peer]
+capabilities:
+  provides: [delegate-via-peer-call]

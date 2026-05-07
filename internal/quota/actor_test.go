@@ -173,3 +173,53 @@ func TestActorStops(t *testing.T) {
 		t.Fatal("expected error after stop")
 	}
 }
+
+// TestUncharge covers the hire_junior refund-on-exit path: an atomic
+// inverse of Consume that won't drop consumed below zero even on
+// repeated calls or wildly oversized amounts (defensive — the daemon
+// computes the refund from child.remaining, but we don't trust the
+// caller to never hand us a stale or wrong number).
+func TestUncharge(t *testing.T) {
+	a, cancel := setupActor(t)
+	defer cancel()
+	ctx := context.Background()
+	k := Key{RoomID: "R", Agent: "manager", Resource: "tokens:gpt"}
+
+	// Limit 1000, consume 600 (simulates a hire_junior carve). Now
+	// uncharge 250 (child only used 350 of 600). Remaining grows.
+	if _, err := a.SetLimit(ctx, k, 1000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Consume(ctx, k, 600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Remaining(ctx, k)
+	if err != nil || res.Remaining != 400 {
+		t.Fatalf("after carve: %+v", res)
+	}
+	res, err = a.Uncharge(ctx, k, 250)
+	if err != nil {
+		t.Fatalf("Uncharge: %v", err)
+	}
+	if res.Remaining != 650 {
+		t.Errorf("after uncharge: remaining=%d want 650", res.Remaining)
+	}
+
+	// Uncharge more than consumed clamps at zero, doesn't go negative.
+	res, _ = a.Uncharge(ctx, k, 10000)
+	if res.Remaining != 1000 {
+		t.Errorf("over-uncharge: remaining=%d want 1000 (clamped)", res.Remaining)
+	}
+
+	// Negative amount rejected.
+	if _, err := a.Uncharge(ctx, k, -5); err == nil {
+		t.Error("expected error on negative uncharge")
+	}
+
+	// Unlimited bucket: Uncharge succeeds, returns Unlimited result.
+	uk := Key{RoomID: "R", Agent: "director", Resource: "tokens:gpt"}
+	res, err = a.Uncharge(ctx, uk, 100)
+	if err != nil || !res.Unlimited {
+		t.Errorf("unlimited uncharge: %+v err=%v", res, err)
+	}
+}

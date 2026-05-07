@@ -1,0 +1,16 @@
+name: paper-supervisor
+version: 0.1.0
+kind: skill
+skill: SKILL.md
+model: gpt-4o-mini
+# manager: needs HireAllowed for hire_junior. Tools cover the full
+# auto-hire-and-review pattern: fs (read draft), llm (own reasoning),
+# peer (call workers), hire (spawn them at runtime).
+rank: manager
+tools: [fs, llm, peer, hire]
+capabilities:
+  requires: [fs, llm]
+  provides: [paper-review-orchestration]
+quota:
+  tokens:
+    "gpt-4o-mini": 30000

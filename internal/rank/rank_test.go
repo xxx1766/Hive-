@@ -130,3 +130,54 @@ func TestPrefixBoundary(t *testing.T) {
 		t.Fatal("sibling dir must not match")
 	}
 }
+
+// TestCanHire covers the three rules in CanHire — only HireAllowed
+// ranks may auto-hire, and only into strictly lower Levels.
+func TestCanHire(t *testing.T) {
+	reg := DefaultRegistry()
+	intern, _ := reg.Get("intern")
+	staff, _ := reg.Get("staff")
+	manager, _ := reg.Get("manager")
+	director, _ := reg.Get("director")
+
+	for _, c := range []struct {
+		self, child *Rank
+		wantOK      bool
+		hint        string
+	}{
+		{director, manager, true, "director→manager"},
+		{director, staff, true, "director→staff"},
+		{director, intern, true, "director→intern"},
+		{manager, staff, true, "manager→staff"},
+		{manager, intern, true, "manager→intern"},
+		{manager, manager, false, "no peer hires"},
+		{manager, director, false, "no upward hires"},
+		{staff, intern, false, "staff lacks HireAllowed"},
+		{intern, intern, false, "intern lacks HireAllowed"},
+		{intern, staff, false, "intern can't hire upward either"},
+	} {
+		err := c.self.CanHire(c.child)
+		gotOK := err == nil
+		if gotOK != c.wantOK {
+			t.Errorf("%s: CanHire returned err=%v, wanted ok=%v", c.hint, err, c.wantOK)
+		}
+	}
+}
+
+// TestRankLevelsAscending pins the Level ordering — recovery /
+// daemon-side comparisons rely on the absolute values, not just relative
+// ordering, so flipping the constants would silently break.
+func TestRankLevelsAscending(t *testing.T) {
+	reg := DefaultRegistry()
+	for name, want := range map[string]int{
+		"intern": 0, "staff": 1, "manager": 2, "director": 3,
+	} {
+		r, err := reg.Get(name)
+		if err != nil {
+			t.Fatalf("Get(%q): %v", name, err)
+		}
+		if r.Level != want {
+			t.Errorf("%s.Level = %d want %d", name, r.Level, want)
+		}
+	}
+}

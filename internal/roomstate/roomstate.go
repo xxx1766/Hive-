@@ -52,6 +52,15 @@ type MemberSnap struct {
 	QuotaOver json.RawMessage      `json:"quota,omitempty"`
 	Volumes   []ipc.VolumeMountRef `json:"volumes,omitempty"`
 	HiredAt   time.Time            `json:"hired_at"`
+	// Parent (when set) records the in-room name of the auto-hiring Agent.
+	// Empty for top-level hires (CLI / Hivefile). Recovery preserves this
+	// so the subordinate-tree shape survives daemon restart.
+	Parent    string               `json:"parent,omitempty"`
+	// Name (when set) overrides the default in-room identity (which
+	// defaults to Image.Name). Allows the same image to be hired
+	// multiple times with distinct aliases. Omitted from JSON when
+	// equal to Image.Name to keep state.json terse for the common case.
+	Name      string               `json:"name,omitempty"`
 }
 
 // Loaded is one Snapshot plus its derived RoomID (the directory name).

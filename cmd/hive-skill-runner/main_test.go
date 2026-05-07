@@ -51,6 +51,62 @@ func TestParseReply_IrrelevantJSONObject_Rejected(t *testing.T) {
 	}
 }
 
+// TestParseReply_MultipleObjects covers the case some hosted LLMs
+// (notably openai/gpt-5.4-mini through GMI) emit when they try to
+// "plan ahead" by chaining several tool calls in one reply. The
+// runner does one tool call per turn, so we pick the first usable
+// object and discard the rest.
+func TestParseReply_MultipleObjects(t *testing.T) {
+	in := `{"tool":"fs_read","args":{"path":"/a"}}
+{"tool":"fs_read","args":{"path":"/b"}}
+{"answer":"done"}`
+	r := parseReply(in)
+	if r.Tool != "fs_read" {
+		t.Fatalf("first tool call not picked: %+v", r)
+	}
+	if got := r.Args["path"]; got != "/a" {
+		t.Errorf("first object's args lost: %v", got)
+	}
+}
+
+// TestParseReply_MultipleObjects_FirstNoShape covers the variant where
+// the model emits a speculative {"thought":"…"} or similar prefix that
+// has no usable fields, then a real tool call. We must skip the prefix
+// rather than returning an empty reply.
+func TestParseReply_MultipleObjects_FirstNoShape(t *testing.T) {
+	in := `{"thought":"let me first read the corpus"} {"tool":"peer_send","args":{"to":"x","payload":1}}`
+	r := parseReply(in)
+	if r.Tool != "peer_send" {
+		t.Fatalf("expected peer_send, got %+v", r)
+	}
+}
+
+// TestTopLevelObjects exercises the brace-counting scanner directly so
+// future edits don't accidentally regress the depth-tracking edges.
+// Strings with quoted braces / escaped quotes are the common gotchas.
+func TestTopLevelObjects(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"", 0},
+		{"no objects here", 0},
+		{`{"a":1}`, 1},
+		{`{"a":1}{"b":2}`, 2},
+		{"{\"a\":1}\n{\"b\":2}", 2},
+		{`{"a":{"b":1}}`, 1},
+		{`{"a":"} not a closer"}`, 1},
+		{`{"a":"he said \"hi\" "}`, 1},
+		{`{"a":1`, 0}, // unbalanced
+	}
+	for _, c := range cases {
+		got := topLevelObjects(c.in)
+		if len(got) != c.want {
+			t.Errorf("topLevelObjects(%q) = %d (%v), want %d", c.in, len(got), got, c.want)
+		}
+	}
+}
+
 func TestParseCSV(t *testing.T) {
 	cases := map[string][]string{
 		"":                nil,

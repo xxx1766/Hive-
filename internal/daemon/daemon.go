@@ -16,8 +16,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anne-x/hive/internal/agent"
+	"github.com/anne-x/hive/internal/conversation"
 	"github.com/anne-x/hive/internal/eventbus"
+	"github.com/anne-x/hive/internal/httpapi"
 	"github.com/anne-x/hive/internal/image"
 	"github.com/anne-x/hive/internal/ipc"
 	"github.com/anne-x/hive/internal/ns"
@@ -48,6 +49,18 @@ type Daemon struct {
 	events         *eventbus.Manager
 	llmProvider    llmproxy.Provider
 	aiToolProvider aitoolproxy.Provider
+
+	// Conversation primitives: persisted multi-round Agent transcripts
+	// + per-Room SSE bus for UI live updates.
+	convStore *conversation.Store
+	convBus   *conversation.Bus
+	// convIndex resolves convID → ownerRoomID without scanning disk.
+	// Built at startup from convStore.IndexByID(); updated by every
+	// successful conversationCreate. Required for cross-Room peer_send
+	// routing (the sender's Room doesn't always own the conv file).
+	convIndex *convIndex
+	// HTTP server for the embedded UI (non-fatal if it fails to bind).
+	httpAPI *httpapi.Server
 
 	quotaCtx    context.Context
 	quotaCancel context.CancelFunc
@@ -116,6 +129,9 @@ func New() (*Daemon, error) {
 		events:         evtMgr,
 		llmProvider:    prov,
 		aiToolProvider: aiProv,
+		convStore:      conversation.NewStore(ipc.RoomsDir()),
+		convBus:        conversation.NewBus(),
+		convIndex:      newConvIndex(nil),
 		quotaCtx:       qCtx,
 		quotaCancel:    qCancel,
 		rooms:          make(map[string]*room.Room),
@@ -127,6 +143,30 @@ func New() (*Daemon, error) {
 	// Must run before Register exposes RPC handlers — otherwise an early
 	// agent/hire could race with the recovery writer for the same state.json.
 	d.recoverRooms()
+
+	// Conversation recovery: any conversation left in "active" was being
+	// driven by a now-dead daemon process — there's no runner alive that
+	// can converge it. Flip them to "interrupted" so the UI / CLI surfaces
+	// the discontinuity instead of silently re-displaying them as live.
+	if n, err := d.convStore.MarkActiveAsInterrupted(); err != nil {
+		log.Printf("conversation recovery: %v", err)
+	} else if n > 0 {
+		log.Printf("conversation recovery: marked %d active conversation(s) as interrupted", n)
+	}
+
+	// Hydrate the in-memory convID→ownerRoomID index from disk so the
+	// PeerSendForward hook can answer cross-Room routing queries
+	// without scanning. New convs from this point are added via Set
+	// from handleConversationCreate.
+	if seed, err := d.convStore.IndexByID(); err != nil {
+		log.Printf("conversation index: build failed: %v", err)
+	} else {
+		d.convIndex = newConvIndex(seed)
+	}
+
+	// HTTP UI server. Non-fatal if it can't bind — the IPC channel keeps
+	// working. Address comes from HIVE_HTTP_ADDR (default 127.0.0.1:8910).
+	d.httpAPI = d.startHTTPAPI()
 	return d, nil
 }
 
@@ -145,6 +185,11 @@ func (d *Daemon) Register(srv *ipc.Server) {
 	srv.Handle(ipc.MethodRoomLogs, d.handleRoomLogs)
 	srv.Handle(ipc.MethodAgentHire, d.handleAgentHire)
 	srv.Handle(ipc.MethodRoomRun, d.handleRoomRun)
+	srv.Handle(ipc.MethodConversationCreate, d.handleConversationCreate)
+	srv.Handle(ipc.MethodConversationStart, d.handleConversationStart)
+	srv.Handle(ipc.MethodConversationList, d.handleConversationList)
+	srv.Handle(ipc.MethodConversationGet, d.handleConversationGet)
+	srv.Handle(ipc.MethodConversationCancel, d.handleConversationCancel)
 }
 
 // Shutdown stops every Room. Called when hived receives SIGTERM.
@@ -156,6 +201,12 @@ func (d *Daemon) Shutdown() {
 	d.shutMu.Lock()
 	d.shuttingDown = true
 	d.shutMu.Unlock()
+
+	// Stop accepting new HTTP requests first so in-flight UI calls
+	// don't try to talk to a half-torn-down state.
+	if d.httpAPI != nil {
+		d.httpAPI.Stop()
+	}
 
 	d.mu.Lock()
 	rms := make([]*room.Room, 0, len(d.rooms))
@@ -187,16 +238,18 @@ func (d *Daemon) isShuttingDown() bool {
 // Conn at hire time. Proxies enforce Rank and consume quota through the
 // single quota.Actor; connection pooling for HTTP is hidden in netproxy.
 func (d *Daemon) installAgentProxies(r *room.Room, m *room.Member) {
-	// Install the merged (Rank default + override) quota.
+	// Install the merged (Rank default + override) quota. Quota keys
+	// use m.Name (the in-room identity) so two members of the same
+	// image don't share buckets — that's the entire point of aliasing.
 	eff := m.EffectiveQuota()
 	for k, v := range eff.Tokens {
 		_, _ = d.quota.SetLimit(d.quotaCtx, quota.Key{
-			RoomID: r.ID, Agent: m.Image.Name, Resource: "tokens:" + k,
+			RoomID: r.ID, Agent: m.Name, Resource: "tokens:" + k,
 		}, v)
 	}
 	for k, v := range eff.APICalls {
 		_, _ = d.quota.SetLimit(d.quotaCtx, quota.Key{
-			RoomID: r.ID, Agent: m.Image.Name, Resource: k,
+			RoomID: r.ID, Agent: m.Name, Resource: k,
 		}, v)
 	}
 
@@ -230,18 +283,18 @@ func (d *Daemon) installAgentProxies(r *room.Room, m *room.Member) {
 		return len(fsMounts[i].AgentPath) > len(fsMounts[j].AgentPath)
 	})
 	fs := &fsproxy.Proxy{RoomRootfs: r.Rootfs, Rank: fsRank, Mounts: fsMounts}
-	net := &netproxy.Proxy{RoomID: r.ID, AgentName: m.Image.Name, Rank: m.Rank, Quota: d.quota}
-	llm := &llmproxy.Proxy{RoomID: r.ID, AgentName: m.Image.Name, Rank: m.Rank, Quota: d.quota, Provider: d.llmProvider}
+	net := &netproxy.Proxy{RoomID: r.ID, AgentName: m.Name, Rank: m.Rank, Quota: d.quota}
+	llm := &llmproxy.Proxy{RoomID: r.ID, AgentName: m.Name, Rank: m.Rank, Quota: d.quota, Provider: d.llmProvider}
 	mem := &memproxy.Proxy{
 		RoomID:    r.ID,
-		AgentName: m.Image.Name,
+		AgentName: m.Name,
 		Rank:      m.Rank,
 		Volumes:   d.volumes,
 		RoomsDir:  ipc.RoomsDir(),
 	}
 	evt := &eventproxy.Proxy{
 		RoomID:    r.ID,
-		AgentName: m.Image.Name,
+		AgentName: m.Name,
 		Rank:      m.Rank,
 		Volumes:   d.volumes,
 		Bus:       d.events,
@@ -249,7 +302,7 @@ func (d *Daemon) installAgentProxies(r *room.Room, m *room.Member) {
 	}
 	ait := &aitoolproxy.Proxy{
 		RoomID:    r.ID,
-		AgentName: m.Image.Name,
+		AgentName: m.Name,
 		Rank:      m.Rank,
 		Quota:     d.quota,
 		Provider:  d.aiToolProvider,
@@ -297,6 +350,14 @@ func (d *Daemon) installAgentProxies(r *room.Room, m *room.Member) {
 
 	m.Conn.Handle(rpc.MethodAIToolInvoke, func(ctx context.Context, params json.RawMessage) (any, error) {
 		return ait.Invoke(ctx, params)
+	})
+
+	// hire/junior — manager+ rank only. Validates rank.CanHire, atomically
+	// carves the requested quota out of the parent's remaining budget,
+	// and installs the subordinate via the same hireFromConfig path that
+	// agent/hire (CLI) and recovery use.
+	m.Conn.Handle(rpc.MethodHireJunior, func(ctx context.Context, params json.RawMessage) (any, error) {
+		return d.handleHireJunior(ctx, r, m, params)
 	})
 }
 
@@ -391,14 +452,90 @@ func (d *Daemon) createRoom(roomID, name string) (*room.Room, error) {
 			// peer policies can slot in here.
 			return nil
 		},
+		PeerSendIntercept: func(r *room.Room, from, to, convID string, payload json.RawMessage) error {
+			// No conv attached → ad-hoc peer message, skip Conversation
+			// bookkeeping entirely. Existing peer/send semantics preserved.
+			if convID == "" {
+				return nil
+			}
+			// Owner Room may differ from sender's r.ID for cross-Room
+			// convs — consult the index. Fall back to r.ID when the
+			// index doesn't know (lets brand-new convs that hadn't
+			// finished Create when this fired still resolve via the
+			// sender's directory).
+			ownerID := d.convIndex.Owner(convID)
+			if ownerID == "" {
+				ownerID = r.ID
+			}
+			c, err := d.convStore.Load(ownerID, convID)
+			if err != nil {
+				return protocol.NewError(protocol.ErrCodeInvalidParams,
+					fmt.Sprintf("conversation %s not found", convID))
+			}
+			if c.Status.Terminal() {
+				return protocol.NewError(protocol.ErrCodeInvalidParams,
+					fmt.Sprintf("conversation %s is %s; cannot accept new messages", convID, c.Status))
+			}
+			if c.RoundCount >= c.MaxRounds {
+				// Round cap hit. Cancel the conversation here so a single
+				// reject is durable — subsequent peer/sends will see status
+				// terminal and bounce on the check above. Caller-facing error
+				// surfaces as a permission_denied so the agent's reply path
+				// treats it like any other policy rejection.
+				_, _ = d.convStore.Update(ownerID, convID, func(cc *conversation.Conversation) {
+					cc.Status = conversation.StatusCancelled
+					cc.Error = "round_cap"
+					cc.FinishedAt = time.Now().UTC()
+				})
+				d.publishConvEvent(ownerID, convID, conversation.EventConvFinished, map[string]any{
+					"reason": "round_cap", "max_rounds": c.MaxRounds,
+				})
+				return protocol.NewError(protocol.ErrCodePermissionDenied,
+					fmt.Sprintf("conversation %s round cap (%d) exceeded", convID, c.MaxRounds))
+			}
+			return nil
+		},
+		PeerSendForward: d.peerSendForward,
+		PeerSendDelivered: func(r *room.Room, from, to, convID string, payload json.RawMessage) {
+			if convID == "" {
+				return
+			}
+			ownerID := d.convIndex.Owner(convID)
+			if ownerID == "" {
+				ownerID = r.ID
+			}
+			updated, err := d.convStore.Append(ownerID, convID, conversation.Message{
+				From:    from,
+				To:      to,
+				Kind:    conversation.KindPeer,
+				Payload: payload,
+			})
+			if err != nil {
+				log.Printf("conversation %s: append peer message failed: %v", convID, err)
+				return
+			}
+			// Surface the new message on the SSE bus and as a daemon-wide
+			// streaming notification so an active room/run subscriber also
+			// sees the hop without polling.
+			d.publishConvEvent(ownerID, convID, conversation.EventConvMessage, updated.Messages[len(updated.Messages)-1])
+		},
 		RegisterAgentHandlers: d.installAgentProxies,
-		OnAgentExit: func(_ string, conn *agent.Conn) {
+		OnAgentExit: func(r *room.Room, m *room.Member) {
 			// Drop every events/* subscription tied to this Conn so they
 			// don't leak past the Agent's lifetime. Volume buses survive
 			// (other Rooms may still hold subscriptions); only this
 			// Conn's entries are removed.
 			if d.events != nil {
-				d.events.UnsubscribeNotifier(conn)
+				d.events.UnsubscribeNotifier(m.Conn)
+			}
+			// Refund-on-exit: if this Member was auto-hired by another
+			// Agent (m.Parent != ""), return any unused portion of each
+			// carved bucket to the parent's quota. The carve at hire time
+			// was an atomic Consume on the parent; the inverse at exit
+			// is an Uncharge. Bucket-by-bucket: refund = child.remaining
+			// (i.e. carved limit minus what the child actually used).
+			if m.Parent != "" {
+				d.refundCarvesToParent(r.ID, m)
 			}
 			// Skip persistence while the daemon is shutting down — the
 			// reapers fire as we kill Agents, but the existing on-disk
@@ -412,10 +549,10 @@ func (d *Daemon) createRoom(roomID, name string) (*room.Room, error) {
 			// that's already gone. Member is already removed from
 			// r.Members() by the reaper before this hook fires.
 			d.mu.RLock()
-			r := d.rooms[roomID]
+			room := d.rooms[roomID]
 			d.mu.RUnlock()
-			if r != nil {
-				d.persistRoom(r)
+			if room != nil {
+				d.persistRoom(room)
 			}
 		},
 	}
@@ -486,6 +623,7 @@ func (d *Daemon) handleRoomTeam(ctx context.Context, params json.RawMessage, _ i
 	out := make([]ipc.TeamMember, 0, len(mems))
 	for _, m := range mems {
 		out = append(out, ipc.TeamMember{
+			Name:      m.Name,
 			ImageName: m.Image.Name,
 			Rank:      m.Rank.Name,
 			State:     "running",
@@ -599,7 +737,7 @@ func (d *Daemon) remainingQuota(roomID string, m *room.Member) map[string]any {
 	eff := m.EffectiveQuota()
 	for k := range eff.Tokens {
 		res, err := d.quota.Remaining(d.quotaCtx, quota.Key{
-			RoomID: roomID, Agent: m.Image.Name, Resource: "tokens:" + k,
+			RoomID: roomID, Agent: m.Name, Resource: "tokens:" + k,
 		})
 		if err == nil && !res.Unlimited {
 			out["tokens:"+k] = res.Remaining
@@ -607,7 +745,7 @@ func (d *Daemon) remainingQuota(roomID string, m *room.Member) map[string]any {
 	}
 	for k := range eff.APICalls {
 		res, err := d.quota.Remaining(d.quotaCtx, quota.Key{
-			RoomID: roomID, Agent: m.Image.Name, Resource: k,
+			RoomID: roomID, Agent: m.Name, Resource: k,
 		})
 		if err == nil && !res.Unlimited {
 			out[k] = res.Remaining
@@ -642,6 +780,7 @@ func (d *Daemon) handleAgentHire(ctx context.Context, params json.RawMessage, _ 
 	d.persistRoom(r)
 	return ipc.AgentHireResult{
 		Member: ipc.TeamMember{
+			Name:      m.Name,
 			ImageName: m.Image.Name,
 			Rank:      m.Rank.Name,
 			State:     "running",
@@ -658,6 +797,14 @@ type hireConfig struct {
 	Model     string // overrides manifest.Model (HIVE_MODEL); empty ⇒ keep manifest's
 	QuotaOver json.RawMessage
 	Volumes   []ipc.VolumeMountRef
+	// Parent is the auto-hiring Agent's name (empty ⇒ top-level CLI /
+	// Hivefile hire). Threaded through to room.Member so the
+	// subordinate tree survives daemon restart via roomstate.MemberSnap.
+	Parent string
+	// Name is the in-room identity for this hire (overrides
+	// img.Manifest.Name). Empty ⇒ use the image name. Allows the same
+	// image to be hired multiple times under distinct aliases.
+	Name string
 }
 
 // hireFromConfig is the single entry point that turns a hireConfig into
@@ -688,11 +835,19 @@ func (d *Daemon) hireFromConfig(r *room.Room, cfg hireConfig) (*room.Member, err
 					rk.Name, req, img.Manifest.Capabilities.Requires))
 		}
 	}
+	// Resolve the in-room name early — it drives the log filename so
+	// the OS-level file collision (two members of the same image
+	// trying to open the same .stderr.log) is avoided in the alias
+	// case.
+	memberName := cfg.Name
+	if memberName == "" {
+		memberName = img.Manifest.Name
+	}
 	// Per-agent stderr log for easier debugging. Capped + rotated so
 	// long-running Agents don't fill the disk (see logrotate.go). Declared
 	// as the interface type so an open failure leaves logFile as a real
 	// nil (avoiding the typed-nil trap through HireOpts.LogFile).
-	logPath := filepath.Join(ipc.RoomsDir(), r.ID, "logs", img.Manifest.Name+".stderr.log")
+	logPath := filepath.Join(ipc.RoomsDir(), r.ID, "logs", memberName+".stderr.log")
 	var logFile io.WriteCloser
 	if f, err := openRotatingLog(logPath, logMaxBytes()); err == nil {
 		logFile = f
@@ -762,6 +917,8 @@ func (d *Daemon) hireFromConfig(r *room.Room, cfg hireConfig) (*room.Member, err
 		Volumes:       cfg.Volumes,
 		LogFile:       logFile,
 		ExtraEnv:      extraEnv,
+		Parent:        cfg.Parent,
+		Name:          memberName,
 	})
 	if err != nil {
 		if logFile != nil {
@@ -803,7 +960,7 @@ func (d *Daemon) handleRoomRun(ctx context.Context, params json.RawMessage, noti
 		d.notifyMu.Unlock()
 	}()
 
-	out, err := r.Run(ctx, target, p.Task)
+	out, err := r.Run(ctx, target, p.Task, "")
 	if err != nil {
 		return nil, err
 	}
@@ -858,6 +1015,17 @@ func (d *Daemon) persistRoom(r *room.Room) {
 	}
 }
 
+// aliasOrEmpty returns name when it differs from imageName, otherwise
+// "". Keeps the on-disk MemberSnap.Name field zero-valued for the
+// common (non-aliased) case so state.json doesn't bloat with redundant
+// data.
+func aliasOrEmpty(name, imageName string) string {
+	if name == imageName {
+		return ""
+	}
+	return name
+}
+
 // snapshotFor builds a Snapshot from the Room's live state. Members are
 // reduced to the wire-form bits hireFromConfig consumes — image ref,
 // rank name, quota override (re-marshalled), volume mounts. Anything
@@ -872,6 +1040,11 @@ func snapshotFor(r *room.Room) *roomstate.Snapshot {
 			Model:    m.Model,
 			Volumes:  m.Volumes,
 			HiredAt:  m.HiredAt,
+			Parent:   m.Parent,
+			// Persist Name only when it differs from the image name —
+			// avoids bloating state.json for the common (top-level
+			// CLI / Hivefile) case where they're identical.
+			Name: aliasOrEmpty(m.Name, m.Image.Name),
 		}
 		if m.QuotaOverride != nil {
 			// Re-encode through the wire shape so on-disk state stays
@@ -886,8 +1059,20 @@ func snapshotFor(r *room.Room) *roomstate.Snapshot {
 		}
 		out = append(out, ms)
 	}
-	// Stable order makes diffs and tests deterministic.
-	sort.Slice(out, func(i, j int) bool { return out[i].Image.Name < out[j].Image.Name })
+	// Stable order makes diffs and tests deterministic. Sort by member
+	// name (the in-room identity) so two members of the same image
+	// have a predictable ordering by their alias.
+	sort.Slice(out, func(i, j int) bool {
+		ai := out[i].Name
+		if ai == "" {
+			ai = out[i].Image.Name
+		}
+		aj := out[j].Name
+		if aj == "" {
+			aj = out[j].Image.Name
+		}
+		return ai < aj
+	})
 	return &roomstate.Snapshot{
 		Version: roomstate.CurrentVersion,
 		Name:    r.Name,
@@ -932,6 +1117,8 @@ func (d *Daemon) recoverOne(snap roomstate.Loaded) error {
 			Model:     ms.Model,
 			QuotaOver: ms.QuotaOver,
 			Volumes:   ms.Volumes,
+			Parent:    ms.Parent,
+			Name:      ms.Name,
 		})
 		if err != nil {
 			log.Printf("hived: recover %s/%s: %v", snap.RoomID, ms.Image.Name, err)

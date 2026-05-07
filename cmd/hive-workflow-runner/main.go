@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/anne-x/hive/internal/peerawait"
 	"github.com/anne-x/hive/internal/runners"
 	"github.com/anne-x/hive/internal/workflow"
 	hive "github.com/anne-x/hive/sdk/go"
@@ -56,8 +57,68 @@ func main() {
 	})
 
 	ctx := context.Background()
-	for task := range a.Tasks() {
-		runOne(ctx, a, task, mode, model, tools)
+
+	// peer-router goroutine: owns a.Peers() consumption and routes each
+	// inbound message to either a registered awaiter (peer_call in
+	// flight from a workflow step) or the fallback channel that drives
+	// runFromPeer (ad-hoc inbound peer with conv_id treated as a new
+	// task trigger). Same architecture as hive-skill-runner; lets a
+	// kind: workflow agent be both a peer_call initiator (via flow.json)
+	// and a peer_call target.
+	aw := peerawait.New()
+	go func() {
+		for {
+			select {
+			case p, ok := <-a.Peers():
+				if !ok {
+					aw.Close()
+					return
+				}
+				aw.Dispatch(p)
+			case <-a.Done():
+				aw.Close()
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case task, ok := <-a.Tasks():
+			if !ok {
+				return
+			}
+			runOne(ctx, a, task, mode, model, tools, aw)
+		case peer, ok := <-aw.Fallback():
+			if !ok {
+				return
+			}
+			runFromPeer(ctx, a, peer, mode, model, tools, aw)
+		case <-a.Done():
+			return
+		}
+	}
+}
+
+// runFromPeer treats an inbound peer/recv with a non-empty ConvID as a
+// follow-up workflow execution. Same pipeline as runOne, but the result
+// is shipped back to the sender as a peer/send hop within the same
+// Conversation. Peer messages without ConvID are dropped (logged) since
+// workflows have no contract for ad-hoc inbound chat.
+func runFromPeer(ctx context.Context, a *hive.Agent, peer *hive.PeerMessage, mode *runMode, model string, tools []string, aw *peerawait.Awaiter) {
+	if peer.ConvID == "" {
+		a.Log("info", "peer message dropped (no conv_id)", map[string]any{"from": peer.From})
+		return
+	}
+	a.Log("info", "workflow peer received", map[string]any{"from": peer.From, "conv_id": peer.ConvID, "mode": mode.name})
+
+	out, err := executeWorkflow(ctx, a, mode, model, tools, peer.Payload, peer.ConvID, aw)
+	if err != nil {
+		_ = a.PeerSend(ctx, peer.From, map[string]any{"error": err.Error()}, hive.WithConv(peer.ConvID))
+		return
+	}
+	if err := a.PeerSend(ctx, peer.From, out, hive.WithConv(peer.ConvID)); err != nil {
+		a.Log("error", "peer reply failed", map[string]any{"err": err.Error(), "conv_id": peer.ConvID})
 	}
 }
 
@@ -93,16 +154,43 @@ func detectMode() (*runMode, error) {
 
 // ── task execution ───────────────────────────────────────────────────────
 
-func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, mode *runMode, model string, tools []string) {
-	a.Log("info", "workflow task received", map[string]any{"task_id": task.ID, "mode": mode.name})
+func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, mode *runMode, model string, tools []string, aw *peerawait.Awaiter) {
+	a.Log("info", "workflow task received", map[string]any{"task_id": task.ID, "mode": mode.name, "conv_id": task.ConvID})
+	out, err := executeWorkflow(ctx, a, mode, model, tools, task.Input, task.ConvID, aw)
+	if err != nil {
+		// executeWorkflow returns a *runErr for staged failures so we can
+		// preserve the original exit code — keep the existing 2..6 mapping.
+		if re, ok := err.(*runErr); ok {
+			_ = task.Fail(re.code, re.msg)
+			return
+		}
+		_ = task.Fail(2, err.Error())
+		return
+	}
+	_ = task.Reply(out)
+}
 
+// runErr is a typed error so executeWorkflow can carry the legacy exit
+// codes (2: planner, 3: tool not allowed, 4: arg resolve, 5: tool, 6:
+// output) through to the task/error caller without losing semantics.
+type runErr struct {
+	code int
+	msg  string
+}
+
+func (e *runErr) Error() string { return e.msg }
+
+// executeWorkflow runs the configured mode against `input` and returns
+// the structured reply (`{output, mode, steps}`). convID, when non-empty,
+// is injected into peer_send args so cross-Agent hops emitted by the
+// workflow contribute to the right Conversation transcript.
+func executeWorkflow(ctx context.Context, a *hive.Agent, mode *runMode, model string, tools []string, input json.RawMessage, convID string, aw *peerawait.Awaiter) (map[string]any, error) {
 	wf := mode.static
 	if mode.name == "llm" {
-		planned, err := planWorkflow(ctx, a, mode.prompt, model, tools, task.Input)
+		planned, err := planWorkflow(ctx, a, mode.prompt, model, tools, input)
 		if err != nil {
 			a.Log("error", "planner failed", map[string]any{"err": err.Error()})
-			_ = task.Fail(2, err.Error())
-			return
+			return nil, &runErr{code: 2, msg: err.Error()}
 		}
 		wf = planned
 		a.Log("info", "planner produced workflow", map[string]any{"steps": len(wf.Steps)})
@@ -111,23 +199,21 @@ func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, mode *runMode, 
 	// Unmarshal task input into a generic value so `$input.<path>` works.
 	// Non-JSON inputs become a plain string — users then reference via
 	// `$input` as a whole, not `$input.something`.
-	var input any
-	if len(task.Input) > 0 {
-		if err := json.Unmarshal(task.Input, &input); err != nil {
-			input = string(task.Input)
+	var inputAny any
+	if len(input) > 0 {
+		if err := json.Unmarshal(input, &inputAny); err != nil {
+			inputAny = string(input)
 		}
 	}
 
-	wctx := workflow.NewContext(input)
+	wctx := workflow.NewContext(inputAny)
 	for i, step := range wf.Steps {
 		if !runners.ToolAllowed(step.Tool, tools) {
-			_ = task.Fail(3, fmt.Sprintf("step[%d] %s: tool %q not in allow-list %v", i, step.ID, step.Tool, tools))
-			return
+			return nil, &runErr{code: 3, msg: fmt.Sprintf("step[%d] %s: tool %q not in allow-list %v", i, step.ID, step.Tool, tools)}
 		}
 		resolvedRaw, err := workflow.Resolve(step.Args, wctx)
 		if err != nil {
-			_ = task.Fail(4, fmt.Sprintf("step[%d] %s: %v", i, step.ID, err))
-			return
+			return nil, &runErr{code: 4, msg: fmt.Sprintf("step[%d] %s: %v", i, step.ID, err)}
 		}
 		resolvedArgs, _ := resolvedRaw.(map[string]any)
 		if resolvedArgs == nil {
@@ -136,9 +222,8 @@ func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, mode *runMode, 
 		// LLM model fallback: when an llm_complete step doesn't pin a
 		// model in flow.json, use HIVE_MODEL (set by the daemon from the
 		// manifest's `model:` field, possibly overridden by `hive hire
-		// --model X`). Skill-runner already does this at line 58-61;
-		// mirroring it here lets workflow agents pick up `--model` too,
-		// without having to edit every flow.json.
+		// --model X`). Mirrors skill-runner's HIVE_MODEL fallback so
+		// workflow agents pick up `--model` too without editing flow.json.
 		if step.Tool == "llm_complete" {
 			if m, ok := resolvedArgs["model"]; !ok || m == nil || m == "" {
 				if envModel := os.Getenv("HIVE_MODEL"); envModel != "" {
@@ -146,25 +231,53 @@ func runOne(ctx context.Context, a *hive.Agent, task *hive.Task, mode *runMode, 
 				}
 			}
 		}
-		a.Log("info", "step start", map[string]any{"i": i, "id": step.ID, "tool": step.Tool})
-		result, err := runners.DispatchTool(ctx, a, step.Tool, resolvedArgs)
-		if err != nil {
-			_ = task.Fail(5, fmt.Sprintf("step[%d] %s (%s): %v", i, step.ID, step.Tool, err))
-			return
+		// Conversation hop attribution: a workflow step that emits a
+		// peer hop inside a Conversation should advance the right
+		// transcript. peer_call uses the conv_id passed to its
+		// dispatcher (separate parameter, not args), so injection only
+		// matters for peer_send here. Explicit > implicit.
+		if step.Tool == "peer_send" && convID != "" {
+			if v, ok := resolvedArgs["conv_id"]; !ok || v == nil || v == "" {
+				resolvedArgs["conv_id"] = convID
+			}
 		}
-		wctx.Steps[step.ID] = result
+		a.Log("info", "step start", map[string]any{"i": i, "id": step.ID, "tool": step.Tool})
+		var (
+			stepResult any
+			stepErr    error
+		)
+		switch step.Tool {
+		case "peer_call":
+			// Synchronous request/reply — register awaiter, PeerSend,
+			// block on the matching reply. Result shape:
+			// {"from": <name>, "payload": <reply>}. Stored in
+			// wctx.Steps[step.ID]; downstream steps reference it as
+			// $steps.<id>.payload.
+			stepResult, stepErr = dispatchPeerCall(ctx, a, resolvedArgs, convID, aw)
+		case "peer_call_many":
+			// Parallel fan-out — one PeerSend per call, all awaiters
+			// registered upfront, WaitGroup-join. Result shape:
+			// {"replies": [{"to","ok","from","payload"|"error"}, ...]}
+			// in the original calls order.
+			stepResult, stepErr = dispatchPeerCallMany(ctx, a, resolvedArgs, convID, aw)
+		default:
+			stepResult, stepErr = runners.DispatchTool(ctx, a, step.Tool, resolvedArgs)
+		}
+		if stepErr != nil {
+			return nil, &runErr{code: 5, msg: fmt.Sprintf("step[%d] %s (%s): %v", i, step.ID, step.Tool, stepErr)}
+		}
+		wctx.Steps[step.ID] = stepResult
 	}
 
 	out, err := wf.ResolveOutput(wctx)
 	if err != nil {
-		_ = task.Fail(6, fmt.Sprintf("resolve output: %v", err))
-		return
+		return nil, &runErr{code: 6, msg: fmt.Sprintf("resolve output: %v", err)}
 	}
-	_ = task.Reply(map[string]any{
+	return map[string]any{
 		"output": out,
 		"mode":   mode.name,
 		"steps":  wctx.Steps,
-	})
+	}, nil
 }
 
 // ── LLM planner (kind=workflow, planner: mode) ───────────────────────────
@@ -229,7 +342,9 @@ func plannerInstructions(tools []string) string {
 		b.WriteString(`  fs_list      args {path} → [{name,is_dir,size}...]` + "\n")
 	}
 	if hasTool(tools, runners.GroupPeer) {
-		b.WriteString(`  peer_send    args {to,payload}` + "\n")
+		b.WriteString(`  peer_send       args {to,payload} → "sent"  (fire-and-forget; returns immediately)` + "\n")
+		b.WriteString(`  peer_call       args {to,payload,timeout_seconds?} → {from,payload}  (sync await; only inside a Conversation)` + "\n")
+		b.WriteString(`  peer_call_many  args {calls:[{to,payload},...],timeout_seconds?} → {replies:[{to,ok,from,payload,error},...]}  (parallel fan-out)` + "\n")
 	}
 	if hasTool(tools, runners.GroupLLM) {
 		b.WriteString(`  llm_complete args {model,messages,max_tokens?} → {text,usage}` + "\n")

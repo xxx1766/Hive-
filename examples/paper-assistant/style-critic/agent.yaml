@@ -1,0 +1,15 @@
+name: paper-style-critic
+version: 0.1.0
+kind: skill
+skill: SKILL.md
+model: gpt-4o-mini   # overridden by Hivefile / hire_junior to match parent's model
+# staff: needs LLM + fs read for the draft and the style-notes; no
+# write needed (output goes back to caller, not to a volume).
+rank: staff
+tools: [fs, llm]
+capabilities:
+  requires: [fs, llm]
+  provides: [paper-style-review]
+quota:
+  tokens:
+    "gpt-4o-mini": 15000

@@ -22,6 +22,10 @@ const (
 	GroupLLM    = "llm"
 	GroupMemory = "memory"
 	GroupAITool = "ai_tool"
+	// GroupHire grants the hire_junior tool — manager+ rank Agents only,
+	// daemon enforces rank.CanHire on every call. Skill / workflow agents
+	// must list "hire" in their manifest tools[] to opt in.
+	GroupHire = "hire"
 )
 
 // ToolGroup classifies a tool name into its group, or "" if unknown.
@@ -31,7 +35,7 @@ func ToolGroup(tool string) string {
 		return GroupNet
 	case strings.HasPrefix(tool, "fs_"):
 		return GroupFS
-	case tool == "peer_send":
+	case tool == "peer_send", tool == "peer_call", tool == "peer_call_many":
 		return GroupPeer
 	case tool == "llm_complete":
 		return GroupLLM
@@ -39,6 +43,8 @@ func ToolGroup(tool string) string {
 		return GroupMemory
 	case tool == "ai_tool_invoke":
 		return GroupAITool
+	case tool == "hire_junior":
+		return GroupHire
 	}
 	return ""
 }
@@ -129,7 +135,11 @@ func DispatchTool(ctx context.Context, a *hive.Agent, name string, args map[stri
 		if to == "" {
 			return nil, fmt.Errorf("peer_send: to is required")
 		}
-		if err := a.PeerSend(ctx, to, args["payload"]); err != nil {
+		var opts []hive.SendOpt
+		if convID := getString(args, "conv_id"); convID != "" {
+			opts = append(opts, hive.WithConv(convID))
+		}
+		if err := a.PeerSend(ctx, to, args["payload"], opts...); err != nil {
 			return nil, err
 		}
 		return "sent", nil
@@ -188,6 +198,50 @@ func DispatchTool(ctx context.Context, a *hive.Agent, name string, args map[stri
 		}
 		return map[string]any{"output": out}, nil
 
+	case "hire_junior":
+		ref := getString(args, "ref")
+		if ref == "" {
+			return nil, fmt.Errorf("hire_junior: ref is required")
+		}
+		rk := getString(args, "rank")
+		if rk == "" {
+			return nil, fmt.Errorf("hire_junior: rank is required")
+		}
+		opts := hive.HireJuniorOpts{
+			Tag:   getString(args, "tag"),
+			Name:  getString(args, "name"),
+			Model: getString(args, "model"),
+		}
+		if q, ok := args["quota"].(map[string]any); ok {
+			opts.Quota = &hive.Quota{
+				Tokens:   intMap(q["tokens"]),
+				APICalls: intMap(q["api_calls"]),
+			}
+		}
+		if vs, ok := args["volumes"].([]any); ok {
+			for _, raw := range vs {
+				v, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				opts.Volumes = append(opts.Volumes, hive.VolumeMount{
+					Name:       getString(v, "name"),
+					Mode:       getString(v, "mode"),
+					Mountpoint: getString(v, "mountpoint"),
+				})
+			}
+		}
+		name, err := a.HireJunior(ctx, ref, rk, opts)
+		if err != nil {
+			return nil, err
+		}
+		// Return the in-room name (defaults to image name when no alias
+		// was set) under both keys for back-compat — older SKILL.md
+		// authors check "image", new ones can use "name". Keep both
+		// pointing at the same value since for the LLM "what to peer_send
+		// to" is the only thing that matters.
+		return map[string]any{"name": name, "image": name, "rank": rk}, nil
+
 	case "llm_complete":
 		model := getString(args, "model")
 		if model == "" {
@@ -243,6 +297,28 @@ func getStringMap(m map[string]any, key string) map[string]string {
 	for k, v := range raw {
 		if s, ok := v.(string); ok {
 			out[k] = s
+		}
+	}
+	return out
+}
+
+// intMap coerces a JSON-decoded any to map[string]int. JSON numbers
+// decode as float64 by default, so integer-valued floats are accepted.
+// Anything else for a value (string, nested object) is dropped silently.
+func intMap(v any) map[string]int {
+	raw, _ := v.(map[string]any)
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(raw))
+	for k, x := range raw {
+		switch t := x.(type) {
+		case float64:
+			out[k] = int(t)
+		case int:
+			out[k] = t
+		case int64:
+			out[k] = int(t)
 		}
 	}
 	return out

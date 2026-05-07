@@ -40,6 +40,12 @@ const (
 	opSetLimit
 	opRemaining
 	opReset
+	// opUncharge atomically decrements consumed (clamped ≥ 0) without
+	// touching the limit. Used by hire/junior refund-on-exit: when a
+	// subordinate Agent exits with unused budget, the daemon refunds
+	// the parent's bucket by uncharging the unused amount it consumed
+	// at hire time. Pure inverse of opConsume.
+	opUncharge
 )
 
 type request struct {
@@ -109,6 +115,22 @@ func (a *Actor) Run(ctx context.Context) {
 			case opReset:
 				delete(consumed, r.key)
 				r.reply <- Result{Allowed: true}
+
+			case opUncharge:
+				// Inverse of opConsume — clamped at zero. We never
+				// decrement past zero because that would mean the
+				// child consumed less than nothing, which is nonsense.
+				cur := consumed[r.key]
+				cur -= r.amount
+				if cur < 0 {
+					cur = 0
+				}
+				consumed[r.key] = cur
+				if lim, ok := limits[r.key]; ok {
+					r.reply <- Result{Allowed: true, Remaining: lim - cur}
+				} else {
+					r.reply <- Result{Allowed: true, Unlimited: true, Remaining: -1}
+				}
 			}
 
 		case <-ctx.Done():
@@ -142,6 +164,18 @@ func (a *Actor) Remaining(ctx context.Context, key Key) (Result, error) {
 // Reset zeros the consumed counter for the key (limit untouched).
 func (a *Actor) Reset(ctx context.Context, key Key) (Result, error) {
 	return a.call(ctx, request{op: opReset, key: key})
+}
+
+// Uncharge atomically decrements consumed by `amount` (clamped at 0).
+// Used by the daemon to refund unused subordinate quota back to the
+// parent's bucket when a subordinate Agent exits — see
+// hire_junior carve semantics in ARCHITECTURE.md § "Auto-hire 与
+// 配额 carve". amount must be >= 0.
+func (a *Actor) Uncharge(ctx context.Context, key Key, amount int) (Result, error) {
+	if amount < 0 {
+		return Result{}, fmt.Errorf("negative uncharge: %d", amount)
+	}
+	return a.call(ctx, request{op: opUncharge, key: key, amount: amount})
 }
 
 func (a *Actor) call(ctx context.Context, req request) (Result, error) {
