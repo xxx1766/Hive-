@@ -3,6 +3,7 @@ package memproxy
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -206,4 +207,88 @@ func TestKeysWithSpecialChars_RoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(listed, keys) {
 		t.Fatalf("round-trip failed:\n got  %v\n want %v", listed, keys)
 	}
+}
+
+// Files dropped into <vol>/memory/ by hand (e.g. `cp source.md ...`)
+// arrive with their raw filenames intact — no url.PathEscape applied.
+// memory_get must surface them, otherwise users hit the "input file
+// not found" frustration we got reports of after shipping md-to-doc.
+func TestGet_FallsBackToRawFilename(t *testing.T) {
+	p, volMgr, _ := setup(t)
+	if _, err := volMgr.Create("vt"); err != nil {
+		t.Fatal(err)
+	}
+	// Drop a file directly with the raw name, bypassing memory_put.
+	memDir := filepath.Join(volMgr.Root, "vt", "memory")
+	rawName := "仓库系统专利技术交底书初稿.md"
+	if err := writeRaw(filepath.Join(memDir, rawName), []byte("hello CN")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := p.Get(enc(t, rpc.MemoryGetParams{Scope: "vt", Key: rawName}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := got.(rpc.MemoryGetResult)
+	if !r.Exists || string(r.Value) != "hello CN" {
+		t.Fatalf("raw-named read failed: exists=%v value=%q", r.Exists, string(r.Value))
+	}
+}
+
+// memory_put + memory_get on the same Chinese key must still work —
+// the fallback must not regress the canonical path.
+func TestPutGet_RoundTrip_ChineseKey(t *testing.T) {
+	p, volMgr, _ := setup(t)
+	if _, err := volMgr.Create("vt"); err != nil {
+		t.Fatal(err)
+	}
+	key := "中文测试.md"
+	if _, err := p.Put(enc(t, rpc.MemoryPutParams{Scope: "vt", Key: key, Value: []byte("v")})); err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Get(enc(t, rpc.MemoryGetParams{Scope: "vt", Key: key}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := got.(rpc.MemoryGetResult)
+	if !r.Exists || string(r.Value) != "v" {
+		t.Fatalf("CN round-trip: exists=%v value=%q", r.Exists, string(r.Value))
+	}
+}
+
+// Listing a directory containing both an escaped (memory_put-written)
+// file and a raw (manually dropped) file should surface both keys
+// once each, with the raw key under its own name.
+func TestList_MixedRawAndEscaped(t *testing.T) {
+	p, volMgr, _ := setup(t)
+	if _, err := volMgr.Create("vt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Put(enc(t, rpc.MemoryPutParams{Scope: "vt", Key: "via-put.md", Value: []byte("p")})); err != nil {
+		t.Fatal(err)
+	}
+	memDir := filepath.Join(volMgr.Root, "vt", "memory")
+	if err := writeRaw(filepath.Join(memDir, "raw-name.md"), []byte("r")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := p.List(enc(t, rpc.MemoryListParams{Scope: "vt"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := got.(rpc.MemoryListResult).Keys
+	sort.Strings(listed)
+	want := []string{"raw-name.md", "via-put.md"}
+	if !reflect.DeepEqual(listed, want) {
+		t.Fatalf("List: got %v want %v", listed, want)
+	}
+}
+
+// writeRaw writes data to path, bypassing memory_put's encoding so we
+// can simulate "user did `cp file.md memory/`".
+func writeRaw(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o640)
 }

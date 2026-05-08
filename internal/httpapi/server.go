@@ -29,8 +29,8 @@
 //	GET    /api/volumes/{name}/file?p=<rel>        file contents (text only, 1MB cap)
 //	GET    /api/volumes/{name}/file?p=<rel>&download=1   raw bytes + Content-Disposition (no cap, range-supported)
 //	PUT    /api/volumes/{name}/file?p=<rel>        overwrite/create file with body bytes (atomic; capped at upload-max)
-//	POST   /api/volumes/{name}/files               multipart upload to <vol>/uploads/<file>
-//	POST   /api/volumes/{name}/fetch               server-side URL → <vol>/uploads/<file>
+//	POST   /api/volumes/{name}/files[?subdir=uploads|memory]   multipart upload to <vol>/<subdir>/<file>
+//	POST   /api/volumes/{name}/fetch[?subdir=uploads|memory]   server-side URL → <vol>/<subdir>/<file>
 //	GET    /                                       embedded SPA (UI)
 package httpapi
 

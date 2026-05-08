@@ -199,9 +199,18 @@
         <span class="text-xs font-medium text-slate-700" data-i18n="modal.target">Target agent</span>
         <select id="nc-target" class="mt-0.5 w-full border border-slate-300 rounded px-2 py-1 text-sm bg-white"></select>
       </label>
+      <!-- Smart input toggle: shown when target=md-to-doc. When on,
+           the JSON textarea is hidden and we build task_input from
+           the Files section pickers + Room binding instead. Power
+           users can flip it off to write JSON directly. -->
+      <label id="nc-smart-row" class="hidden flex items-center gap-2">
+        <input type="checkbox" id="nc-smart-input" checked>
+        <span class="text-xs font-medium text-slate-700" data-i18n="modal.smart_input">Smart input — build task JSON from selections below</span>
+      </label>
       <label class="block">
         <span class="text-xs font-medium text-slate-700" data-i18n="modal.input">Initial input (JSON)</span>
         <textarea id="nc-input" rows="4" class="mt-0.5 w-full border border-slate-300 rounded px-2 py-1 text-sm font-mono">{"section":"design"}</textarea>
+        <p id="nc-smart-hint" class="hidden mt-1 text-[10px] text-slate-500" data-i18n="modal.smart_hint">Built automatically from the file picker + Output binding + Template below. Toggle Smart input off to edit JSON directly.</p>
       </label>
       <label class="block">
         <span class="text-xs font-medium text-slate-700" data-i18n="modal.rounds">Max rounds</span>
@@ -258,6 +267,14 @@
           <div class="flex gap-1.5 items-center">
             <span id="nc-existing-label" class="text-[10px] text-slate-500"></span>
             <select id="nc-existing-pick" class="border border-slate-300 rounded px-2 py-0.5 text-xs bg-white flex-1"></select>
+          </div>
+          <!-- Template picker (Smart-mode + md-to-doc only). When set,
+               injects template:{volume,path} into task_input so the
+               docx renderer applies the template's styles. -->
+          <div id="nc-template-row" class="hidden flex gap-1.5 items-center">
+            <span class="text-[10px] text-slate-500" data-i18n="modal.template_label">Template (optional):</span>
+            <select id="nc-template-pick" class="border border-slate-300 rounded px-2 py-0.5 text-xs bg-white flex-1"></select>
+            <button id="nc-template-clear" class="text-slate-400 hover:text-slate-700 text-xs px-1">×</button>
           </div>
           <div id="nc-uploads-chips" class="flex flex-wrap gap-1"></div>
           <p class="text-[10px] text-slate-500" data-i18n="modal.files_hint" data-i18n-html="true">Files land at <code class="font-mono">&lt;volume&gt;/uploads/&lt;filename&gt;</code>. To make a newly-created Volume reachable from existing Agents, re-hire them with <code class="font-mono">--volume</code>.</p>
@@ -424,6 +441,10 @@ const I18N = {
     'bindings.no_volumes': '(no volumes — create one first)',
     'modal.binding_checkbox': 'Use Room volume binding ({volume}{subdir})',
     'modal.binding_no_object': 'Initial input must be a JSON object to inject the volume binding. Either uncheck the binding or change input to {} shape.',
+    'modal.smart_input': 'Smart input — build task JSON from selections below',
+    'modal.smart_hint': 'Built automatically from the file picker + Output binding + Template below. Toggle Smart input off to edit JSON directly.',
+    'modal.template_label': 'Template (optional):',
+    'modal.template_pick_ph': '— pick a template .docx —',
     'modal.existing_label': 'Existing files in {volume}',
     'modal.existing_pick_ph': '— pick a file —',
     'modal.existing_loading': '(loading…)',
@@ -567,6 +588,10 @@ const I18N = {
     'bindings.no_volumes': '（暂无存储卷 — 请先创建一个）',
     'modal.binding_checkbox': '使用 Room 绑定的存储卷（{volume}{subdir}）',
     'modal.binding_no_object': '勾选绑定时，初始输入必须是 JSON 对象。请取消勾选，或把输入改成 {} 结构。',
+    'modal.smart_input': '智能输入 — 根据下面的选择自动构建任务 JSON',
+    'modal.smart_hint': '会自动根据下方的「文件选择 + 输出绑定 + 模板」生成 task_input。关闭后可手写 JSON。',
+    'modal.template_label': '模板（可选）：',
+    'modal.template_pick_ph': '— 选择一个模板 .docx —',
     'modal.existing_label': '{volume} 中已有的文件',
     'modal.existing_pick_ph': '— 选择文件 —',
     'modal.existing_loading': '（加载中…）',
@@ -666,6 +691,16 @@ const state = {
   // (RoomDetail.volume_names); 'all' shows the global list. Toggle UI
   // sits at the top of the Volumes tab.
   volumesScope: 'room',
+  // Volumes tab upload destination: 'uploads' (default) or 'memory'.
+  // Files in memory/ are reachable from agents via memory_get.
+  uploadSubdir: 'uploads',
+  // New-conversation modal Smart Input (md-to-doc only). When true,
+  // the modal hides the JSON textarea and builds task_input from the
+  // file picker + binding + template selections at submit time.
+  smartInput: true,
+  // Currently picked template for the Smart Input md-to-doc flow:
+  // {volume, path} or null. Reset on every modal open.
+  templatePick: null,
 };
 
 // Stable per-agent color palette (10 distinct hues, hashed by name).
@@ -1444,9 +1479,75 @@ document.getElementById('new-conv-btn').onclick = () => {
     bindingRow.classList.add('hidden');
     bindingRow.classList.remove('flex');
   }
+  // Smart input visibility — only useful for agents whose input shape
+  // we know how to auto-build (md-to-doc today). Other targets keep
+  // the JSON-only path.
+  refreshSmartInputForTarget();
+  // Reset template picker.
+  state.templatePick = null;
+  document.getElementById('nc-template-row').classList.add('hidden');
   document.getElementById('new-conv-modal').classList.remove('hidden');
   document.getElementById('new-conv-modal').classList.add('flex');
 };
+
+// Target-agent change → re-evaluate Smart Input visibility. Smart
+// uses an agent-specific input schema, so only show it when the
+// chosen target has one registered.
+document.getElementById('nc-target').addEventListener('change', refreshSmartInputForTarget);
+
+// SMART_INPUT_AGENTS lists targets whose input shape we know how to
+// build from the modal's pickers. Currently only md-to-doc; new
+// agents are added by registering a builder above (see submit
+// handler) and listing their target name here.
+const SMART_INPUT_AGENTS = new Set(['md-to-doc']);
+
+function refreshSmartInputForTarget() {
+  const target = document.getElementById('nc-target').value;
+  const known = SMART_INPUT_AGENTS.has(target);
+  const smartRow = document.getElementById('nc-smart-row');
+  if (known) {
+    smartRow.classList.remove('hidden');
+    smartRow.classList.add('flex');
+  } else {
+    smartRow.classList.add('hidden');
+    smartRow.classList.remove('flex');
+  }
+  // Force Smart on for known agents the first time the user opens
+  // the modal (state.smartInput defaults to true via state init).
+  document.getElementById('nc-smart-input').checked = known && (state.smartInput !== false);
+  applySmartInputVisibility();
+}
+
+document.getElementById('nc-smart-input').addEventListener('change', e => {
+  state.smartInput = e.target.checked;
+  applySmartInputVisibility();
+});
+
+// applySmartInputVisibility hides the JSON textarea + shows the
+// "we'll build this for you" hint when Smart is active. Toggling
+// off restores the textarea so power users can write JSON directly.
+function applySmartInputVisibility() {
+  const on = document.getElementById('nc-smart-input').checked &&
+             SMART_INPUT_AGENTS.has(document.getElementById('nc-target').value);
+  const textarea = document.getElementById('nc-input');
+  const hint = document.getElementById('nc-smart-hint');
+  const label = textarea.parentElement.querySelector('span');
+  if (on) {
+    textarea.classList.add('hidden');
+    if (label) label.classList.add('hidden');
+    hint.classList.remove('hidden');
+    // Show the template picker only in Smart mode (it's md-to-doc-
+    // specific). Populated lazily when a target volume is chosen.
+    document.getElementById('nc-template-row').classList.add('flex');
+    document.getElementById('nc-template-row').classList.remove('hidden');
+  } else {
+    textarea.classList.remove('hidden');
+    if (label) label.classList.remove('hidden');
+    hint.classList.add('hidden');
+    document.getElementById('nc-template-row').classList.add('hidden');
+    document.getElementById('nc-template-row').classList.remove('flex');
+  }
+}
 
 // Populates the Files-section [Volume ▾] dropdown with the current
 // Room's mounted volumes plus a sentinel "+ create new volume" entry.
@@ -1496,10 +1597,58 @@ document.getElementById('nc-vol').addEventListener('change', e => {
   } else {
     createPanel.classList.add('hidden');
     filesRow.classList.remove('hidden');
-    // Refresh the "pick existing file" dropdown for this volume.
+    // Refresh both pickers for this volume — the input-file picker
+    // (existing files → input_files) AND the template picker
+    // (existing .docx → template).
     populateExistingPicker(v);
+    populateTemplatePicker(v);
   }
 });
+
+// populateTemplatePicker fills the Smart-mode template dropdown with
+// .docx files in the chosen volume. Empty result → "(no .docx)" so
+// the user knows to upload one.
+async function populateTemplatePicker(volume) {
+  const sel = document.getElementById('nc-template-pick');
+  if (!sel) return;
+  sel.innerHTML = `<option>${escapeHtml(t('modal.existing_loading'))}</option>`;
+  let tree = [];
+  try { tree = await api(`/api/volumes/${volume}/tree`); } catch { tree = []; }
+  const docx = [];
+  function walk(entries) {
+    for (const e of (entries || [])) {
+      if (e.is_dir) walk(e.children);
+      else if (/\.docx$/i.test(e.path)) docx.push({path: e.path, size: e.size});
+    }
+  }
+  walk(tree);
+  sel.innerHTML = '';
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = t('modal.template_pick_ph');
+  sel.appendChild(placeholder);
+  for (const f of docx) {
+    const opt = document.createElement('option');
+    opt.value = f.path;
+    opt.textContent = `${f.path}  (${formatBytes(f.size)})`;
+    sel.appendChild(opt);
+  }
+}
+
+document.getElementById('nc-template-pick').addEventListener('change', e => {
+  const path = e.target.value;
+  const volume = document.getElementById('nc-vol').value;
+  if (!path || !volume || volume === '__none__' || volume === '__create__') {
+    state.templatePick = null;
+    return;
+  }
+  state.templatePick = {volume, path};
+});
+
+document.getElementById('nc-template-clear').onclick = () => {
+  state.templatePick = null;
+  document.getElementById('nc-template-pick').value = '';
+};
 
 // populateExistingPicker fetches /api/volumes/{v}/tree and flattens
 // it into a single dropdown of {volume, path} options. Selecting one
@@ -1772,8 +1921,16 @@ document.getElementById('nc-submit').onclick = async () => {
   const inputRaw = document.getElementById('nc-input').value.trim();
   const rounds = parseInt(document.getElementById('nc-rounds').value, 10) || 8;
   const autostart = document.getElementById('nc-autostart').checked;
+  // Smart input is ON when the toggle is checked AND the target
+  // agent has a registered Smart input shape. In Smart mode we
+  // start from an empty object and let the merge logic below
+  // populate it; in JSON mode we parse the textarea as today.
+  const smartOn = document.getElementById('nc-smart-input').checked &&
+                  SMART_INPUT_AGENTS.has(target);
   let inputObj = null;
-  if (inputRaw) {
+  if (smartOn) {
+    inputObj = {};
+  } else if (inputRaw) {
     try { inputObj = JSON.parse(inputRaw); }
     catch (e) { alert(t('modal.invalid_input_json', {err: e.message})); return; }
   }
@@ -1788,7 +1945,7 @@ document.getElementById('nc-submit').onclick = async () => {
   const bindings = (state.currentRoom && state.currentRoom.bindings) || [];
   const useBinding = bindings.length > 0 && document.getElementById('nc-use-binding').checked;
   const existingPicks = state.pendingUploads.filter(u => u.kind === 'existing');
-  if (useBinding || existingPicks.length > 0) {
+  if (useBinding || existingPicks.length > 0 || smartOn) {
     if (inputObj === null || typeof inputObj !== 'object' || Array.isArray(inputObj)) {
       alert(t('modal.binding_no_object'));
       return;
@@ -1800,6 +1957,18 @@ document.getElementById('nc-submit').onclick = async () => {
     }
     if (existingPicks.length > 0) {
       inputObj.input_files = existingPicks.map(u => ({volume: u.volume, path: u.path}));
+    }
+    // Smart-mode extras for md-to-doc: template + auto-filename.
+    if (smartOn && target === 'md-to-doc') {
+      if (state.templatePick) {
+        inputObj.template = state.templatePick;
+      }
+      if (!inputObj.output_filename && existingPicks.length > 0) {
+        // Derive a sensible default: <basename without ext>.docx
+        const src = existingPicks[0].path.split('/').pop() || 'doc.md';
+        const stem = src.replace(/\.[^.]+$/, '') || 'doc';
+        inputObj.output_filename = stem + '.docx';
+      }
     }
   }
   const body = {tag, target, input: inputObj, max_rounds: rounds};
@@ -1996,17 +2165,37 @@ async function saveBindings(next) {
 
 async function selectVolume(name) {
   state.selectedVolume = name;
-  // Replace volume-list with: back nav + upload row + tree.
+  // Replace volume-list with: back nav + upload row + subdir toggle + tree.
   const el = document.getElementById('volume-list');
   el.innerHTML = `
-    <div class="flex items-center gap-2 px-1 py-1 mb-1 border-b border-slate-100">
+    <div class="flex items-center gap-1 px-1 py-1 mb-1 border-b border-slate-100">
       <button class="text-xs text-blue-600 hover:underline" id="vol-back">${escapeHtml(t('vol.back'))}</button>
-      <button id="vol-upload-btn" class="ml-auto text-xs bg-blue-600 hover:bg-blue-700 text-white px-2 py-0.5 rounded">${escapeHtml(t('vol.upload'))}</button>
+      <!-- Upload destination toggle. Defaults to uploads/. memory/
+           is the agent-readable scope (memory_get reaches it directly,
+           even with raw filenames thanks to the fallback). -->
+      <div class="ml-auto inline-flex border border-slate-200 rounded overflow-hidden text-[10px]">
+        <button id="vol-subdir-uploads" class="px-1.5 py-0.5">uploads/</button>
+        <button id="vol-subdir-memory" class="px-1.5 py-0.5">memory/</button>
+      </div>
+      <button id="vol-upload-btn" class="text-xs bg-blue-600 hover:bg-blue-700 text-white px-2 py-0.5 rounded">${escapeHtml(t('vol.upload'))}</button>
       <input type="file" id="vol-upload-input" multiple class="hidden">
     </div>
     <div id="vol-upload-status" class="text-[10px] text-slate-500 px-1"></div>
     <div id="vol-tree-wrap"></div>
   `;
+  // Default upload destination: uploads/. Persist in state so subsequent
+  // selectVolume calls keep the user's choice.
+  if (!state.uploadSubdir) state.uploadSubdir = 'uploads';
+  function paintSubdirToggle() {
+    const u = document.getElementById('vol-subdir-uploads');
+    const m = document.getElementById('vol-subdir-memory');
+    const sel = state.uploadSubdir;
+    u.className = 'px-1.5 py-0.5 ' + (sel === 'uploads' ? 'bg-blue-600 text-white' : 'text-slate-500');
+    m.className = 'px-1.5 py-0.5 ' + (sel === 'memory' ? 'bg-blue-600 text-white' : 'text-slate-500');
+  }
+  paintSubdirToggle();
+  document.getElementById('vol-subdir-uploads').onclick = () => { state.uploadSubdir = 'uploads'; paintSubdirToggle(); };
+  document.getElementById('vol-subdir-memory').onclick = () => { state.uploadSubdir = 'memory'; paintSubdirToggle(); };
   document.getElementById('vol-back').onclick = () => {
     // Clear the right-pane viewer + actions when leaving volume scope.
     document.getElementById('vol-file-actions').classList.add('hidden');
@@ -2029,7 +2218,7 @@ async function selectVolume(name) {
       status.textContent = t('vol.upload_progress', {i: i + 1, n: files.length, name: f.name});
       const fd = new FormData();
       fd.append('file', f, f.name);
-      const r = await fetch(`/api/volumes/${name}/files`, {method: 'POST', body: fd});
+      const r = await fetch(`/api/volumes/${name}/files?subdir=${encodeURIComponent(state.uploadSubdir || 'uploads')}`, {method: 'POST', body: fd});
       if (!r.ok) {
         status.textContent = '';
         alert(t('vol.upload_failed', {err: `${f.name}: ${r.status} ${await r.text()}`}));
