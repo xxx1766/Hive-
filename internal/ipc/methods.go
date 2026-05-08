@@ -32,6 +32,7 @@ const (
 	MethodConversationList   = "conversation/list"
 	MethodConversationGet    = "conversation/get"
 	MethodConversationCancel = "conversation/cancel"
+	MethodConversationDelete = "conversation/delete" // cancel-if-active then unlink the JSON file
 )
 
 // Notifications the daemon pushes during `room/run`.

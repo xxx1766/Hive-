@@ -33,13 +33,13 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 // handleRoomScoped routes /api/rooms/{id}/... to the right sub-handler.
 // Layout:
 //
-//	/api/rooms/{id}                              GET  RoomDetail
-//	/api/rooms/{id}/rename                       POST mutate display Name
-//	/api/rooms/{id}/conversations                GET  list / POST create
-//	/api/rooms/{id}/conversations/{cid}          GET  full record
+//	/api/rooms/{id}                              GET    RoomDetail / DELETE stop+drop
+//	/api/rooms/{id}/rename                       POST   mutate display Name
+//	/api/rooms/{id}/conversations                GET    list / POST create
+//	/api/rooms/{id}/conversations/{cid}          GET    full record / DELETE remove
 //	/api/rooms/{id}/conversations/{cid}/start    POST
 //	/api/rooms/{id}/conversations/{cid}/cancel   POST
-//	/api/rooms/{id}/events                       GET  SSE stream
+//	/api/rooms/{id}/events                       GET    SSE stream
 func (s *Server) handleRoomScoped(w http.ResponseWriter, r *http.Request) {
 	tail, ok := stripPrefix(r.URL.Path, "/api/rooms/")
 	if !ok || tail == "" {
@@ -56,11 +56,14 @@ func (s *Server) handleRoomScoped(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case len(parts) == 1:
 		// /api/rooms/{id}
-		if r.Method != http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
+			s.serveRoomDetail(w, roomID)
+		case http.MethodDelete:
+			s.deleteRoom(w, roomID)
+		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
 		}
-		s.serveRoomDetail(w, roomID)
 
 	case len(parts) == 2 && parts[1] == "rename":
 		s.handleRoomRename(w, r, roomID)
@@ -111,6 +114,21 @@ func (s *Server) serveRoomDetail(w http.ResponseWriter, roomID string) {
 		return
 	}
 	writeJSON(w, http.StatusOK, d)
+}
+
+// deleteRoom calls into the same daemon path as `room/stop` IPC: stops
+// every Agent in the Room and drops persisted state. There is no soft
+// delete — once removed, the Room won't come back on daemon restart.
+func (s *Server) deleteRoom(w http.ResponseWriter, roomID string) {
+	if s.stopRoom == nil {
+		http.Error(w, "stop not wired", http.StatusInternalServerError)
+		return
+	}
+	if err := s.stopRoom(roomID); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"room_id": roomID, "deleted": true})
 }
 
 // writeJSON marshals v as JSON with the given status. On marshal error

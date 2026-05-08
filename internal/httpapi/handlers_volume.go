@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,32 +14,60 @@ import (
 // not full binaries.
 const volumeFileSizeCap = 1 << 20 // 1 MiB
 
-// handleVolumes responds to GET /api/volumes — list all named volumes.
+// handleVolumes responds to /api/volumes — list (GET) or create (POST).
 func (s *Server) handleVolumes(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		vols, err := s.volumes.List()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		out := make([]map[string]any, 0, len(vols))
+		for _, v := range vols {
+			out = append(out, map[string]any{
+				"name":       v.Name,
+				"path":       v.Path,
+				"created_at": v.CreatedAt,
+			})
+		}
+		writeJSON(w, http.StatusOK, out)
+	case http.MethodPost:
+		s.createVolume(w, r)
+	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// createVolume handles POST /api/volumes with body {"name": "..."}.
+// Mirrors `hive volume create`. Name validation lives in volume.Manager.
+func (s *Server) createVolume(w http.ResponseWriter, r *http.Request) {
+	var p struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	vols, err := s.volumes.List()
+	v, err := s.volumes.Create(p.Name)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	out := make([]map[string]any, 0, len(vols))
-	for _, v := range vols {
-		out = append(out, map[string]any{
-			"name":       v.Name,
-			"path":       v.Path,
-			"created_at": v.CreatedAt,
-		})
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name":       v.Name,
+		"path":       v.Path,
+		"created_at": v.CreatedAt,
+	})
 }
 
 // handleVolumeScoped routes:
 //
-//	/api/volumes/{name}/tree       GET file tree
-//	/api/volumes/{name}/file?p=... GET file content
+//	/api/volumes/{name}             DELETE remove the volume + everything in it
+//	/api/volumes/{name}/tree        GET    file tree
+//	/api/volumes/{name}/file?p=...  GET    file content (text, 1MB cap)
+//	/api/volumes/{name}/files       POST   multipart upload to <vol>/uploads/<file>
+//	/api/volumes/{name}/fetch       POST   server-side URL → <vol>/uploads/<file>
 func (s *Server) handleVolumeScoped(w http.ResponseWriter, r *http.Request) {
 	tail, ok := stripPrefix(r.URL.Path, "/api/volumes/")
 	if !ok {
@@ -46,20 +75,42 @@ func (s *Server) handleVolumeScoped(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.SplitN(tail, "/", 2)
-	if len(parts) < 2 {
+	name := parts[0]
+	if name == "" {
 		http.NotFound(w, r)
 		return
 	}
-	name, op := parts[0], parts[1]
-	if op == "tree" {
+	if len(parts) == 1 {
+		// /api/volumes/{name} — only DELETE is meaningful at the bare path.
+		if r.Method != http.MethodDelete {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.removeVolume(w, name)
+		return
+	}
+	switch parts[1] {
+	case "tree":
 		s.serveVolumeTree(w, r, name)
-		return
-	}
-	if op == "file" {
+	case "file":
 		s.serveVolumeFile(w, r, name)
+	case "files":
+		s.uploadVolumeFile(w, r, name)
+	case "fetch":
+		s.fetchVolumeFile(w, r, name)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// removeVolume backs DELETE /api/volumes/{name}. Idempotent — Manager.Remove
+// is rm -rf semantics, so a missing volume returns success.
+func (s *Server) removeVolume(w http.ResponseWriter, name string) {
+	if err := s.volumes.Remove(name); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	http.NotFound(w, r)
+	writeJSON(w, http.StatusOK, map[string]any{"name": name, "deleted": true})
 }
 
 // fileTreeEntry is one node in the JSON tree response.

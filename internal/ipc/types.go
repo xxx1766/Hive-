@@ -314,6 +314,20 @@ type ConversationCancelResult struct {
 	Status string `json:"status"` // "cancelled"
 }
 
+// ConversationDeleteParams removes a conversation entirely. If status is
+// active, the daemon flips it to cancelled (reason="deleted") first so
+// any in-flight runner stops accepting new round-counted hops; the file
+// is then unlinked and the convIndex entry forgotten.
+type ConversationDeleteParams struct {
+	RoomID string `json:"room_id"`
+	ConvID string `json:"conv_id"`
+}
+
+type ConversationDeleteResult struct {
+	ConvID  string `json:"conv_id"`
+	Deleted bool   `json:"deleted"`
+}
+
 // ConversationEventNotification is the payload of NotifyConversationEvt
 // pushed during `room/run` and on the new SSE `/api/rooms/{id}/events`
 // stream. Type names are stable strings (see internal/conversation/bus.go).

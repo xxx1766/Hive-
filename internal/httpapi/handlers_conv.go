@@ -8,7 +8,7 @@ import (
 // routeRoomConversations dispatches the /conversations subtree.
 //
 //	tail == []                          GET list / POST create
-//	tail == [convID]                    GET full record
+//	tail == [convID]                    GET full record / DELETE remove
 //	tail == [convID, "start"]           POST
 //	tail == [convID, "cancel"]          POST
 func (s *Server) routeRoomConversations(w http.ResponseWriter, r *http.Request, roomID string, tail []string) {
@@ -24,11 +24,14 @@ func (s *Server) routeRoomConversations(w http.ResponseWriter, r *http.Request, 
 		}
 
 	case len(tail) == 1:
-		if r.Method != http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
+			s.getConversation(w, roomID, tail[0])
+		case http.MethodDelete:
+			s.deleteConversation(w, roomID, tail[0])
+		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
 		}
-		s.getConversation(w, roomID, tail[0])
 
 	case len(tail) == 2 && tail[1] == "start":
 		if r.Method != http.MethodPost {
@@ -95,6 +98,18 @@ func (s *Server) startConversation(w http.ResponseWriter, roomID, convID string)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"conv_id": convID, "status": "active"})
+}
+
+func (s *Server) deleteConversation(w http.ResponseWriter, roomID, convID string) {
+	if s.deleteConv == nil {
+		http.Error(w, "delete not wired", http.StatusInternalServerError)
+		return
+	}
+	if err := s.deleteConv(roomID, convID); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"conv_id": convID, "deleted": true})
 }
 
 func (s *Server) cancelConversation(w http.ResponseWriter, r *http.Request, roomID, convID string) {
