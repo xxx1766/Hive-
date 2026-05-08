@@ -111,6 +111,12 @@ type Room struct {
 	Rootfs string
 	State  State
 
+	// Bindings are pure-metadata Volume↔Subdir associations a UI can
+	// show alongside the Room and inject into a conversation's
+	// initial input as {output_volume, output_subdir}. Daemon never
+	// reads them — Agents do, when they want to honour the binding.
+	Bindings []ipc.RoomBinding
+
 	mu      sync.RWMutex
 	members map[string]*Member // key: image name (unique in Room)
 	router  *router.Router

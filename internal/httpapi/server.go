@@ -12,8 +12,9 @@
 // Wire surface (all paths under /api/*):
 //
 //	GET    /api/rooms                              list rooms with conv counts
-//	GET    /api/rooms/{id}                         room detail (members + conv summary + volumes)
+//	GET    /api/rooms/{id}                         room detail (members + conv summary + volumes + bindings)
 //	DELETE /api/rooms/{id}                         stop the room and drop persisted state
+//	PUT    /api/rooms/{id}/bindings                replace Room↔Volume bindings
 //	GET    /api/rooms/{id}/conversations           full list of conversation summaries
 //	GET    /api/rooms/{id}/conversations/{cid}     full conversation transcript
 //	POST   /api/rooms/{id}/conversations           create planned conversation
@@ -44,6 +45,7 @@ import (
 	"time"
 
 	"github.com/anne-x/hive/internal/conversation"
+	"github.com/anne-x/hive/internal/ipc"
 	"github.com/anne-x/hive/internal/version"
 	"github.com/anne-x/hive/internal/volume"
 )
@@ -89,6 +91,10 @@ type RoomDetail struct {
 	// VolumeNames are the named volumes mounted into any of this Room's
 	// agents. UI uses these to populate the volume browser pane.
 	VolumeNames []string `json:"volume_names"`
+	// Bindings are Room-level Volume↔Subdir associations the user
+	// configured via the Volumes-tab Bindings panel. Pure metadata —
+	// the new-conv modal optionally injects them into task_input.
+	Bindings []ipc.RoomBinding `json:"bindings,omitempty"`
 }
 
 // RoomMember mirrors the team-member view but shaped for the HTTP UI.
@@ -138,6 +144,8 @@ type Server struct {
 	// deleteConv cancels (if active) then unlinks the conversation JSON
 	// file. Idempotent.
 	deleteConv func(roomID, convID string) error
+	// setRoomBindings replaces the Room's binding list (PUT semantics).
+	setRoomBindings func(roomID string, bindings []ipc.RoomBinding) ([]ipc.RoomBinding, error)
 
 	httpServer *http.Server
 	listener   net.Listener
@@ -173,6 +181,7 @@ type Hooks struct {
 	DeleteConversation func(roomID, convID string) error
 	RenameRoom         func(roomID, name string) error
 	StopRoom           func(roomID string) error
+	SetRoomBindings    func(roomID string, bindings []ipc.RoomBinding) ([]ipc.RoomBinding, error)
 }
 
 // NewServer wires up an HTTP server. It does not start listening — call
@@ -194,6 +203,7 @@ func NewServer(b Backend, store *conversation.Store, bus *conversation.Bus, vol 
 		deleteConv:         hooks.DeleteConversation,
 		renameRoom:         hooks.RenameRoom,
 		stopRoom:           hooks.StopRoom,
+		setRoomBindings:    hooks.SetRoomBindings,
 	}
 }
 

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/anne-x/hive/internal/ipc"
 )
 
 // handleRooms responds to GET /api/rooms — list rooms with conversation
@@ -68,6 +70,9 @@ func (s *Server) handleRoomScoped(w http.ResponseWriter, r *http.Request) {
 	case len(parts) == 2 && parts[1] == "rename":
 		s.handleRoomRename(w, r, roomID)
 
+	case len(parts) == 2 && parts[1] == "bindings":
+		s.handleRoomBindings(w, r, roomID)
+
 	case len(parts) >= 2 && parts[1] == "conversations":
 		s.routeRoomConversations(w, r, roomID, parts[2:])
 
@@ -114,6 +119,37 @@ func (s *Server) serveRoomDetail(w http.ResponseWriter, roomID string) {
 		return
 	}
 	writeJSON(w, http.StatusOK, d)
+}
+
+// handleRoomBindings PUTs the Room's full Bindings list. The body is
+// {"bindings":[{"volume":"<name>","subdir":"<rel>"},...]}. Empty list
+// clears bindings. Validation (volume exists, name not empty) lives
+// in the daemon-side handler we proxy to.
+func (s *Server) handleRoomBindings(w http.ResponseWriter, r *http.Request, roomID string) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.setRoomBindings == nil {
+		http.Error(w, "set-bindings not wired", http.StatusInternalServerError)
+		return
+	}
+	var p struct {
+		Bindings []ipc.RoomBinding `json:"bindings"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	out, err := s.setRoomBindings(roomID, p.Bindings)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if out == nil {
+		out = []ipc.RoomBinding{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"room_id": roomID, "bindings": out})
 }
 
 // deleteRoom calls into the same daemon path as `room/stop` IPC: stops

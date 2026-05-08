@@ -328,6 +328,30 @@ type ConversationDeleteResult struct {
 	Deleted bool   `json:"deleted"`
 }
 
+// RoomBinding declares an output destination for conversations
+// created inside a Room. Pure metadata — the daemon doesn't act on
+// it; the UI optionally injects {output_volume, output_subdir} into
+// task_input on conv-create when the user keeps the binding-checkbox
+// on. Volume must already exist in the daemon's Volume Manager.
+type RoomBinding struct {
+	Volume string `json:"volume"`
+	Subdir string `json:"subdir,omitempty"`
+}
+
+// RoomSetBindingsParams replaces the entire bindings list on the
+// named Room. Treat as PUT semantics — empty list clears bindings.
+type RoomSetBindingsParams struct {
+	RoomID   string        `json:"room_id"`
+	Bindings []RoomBinding `json:"bindings"`
+}
+
+// RoomSetBindingsResult echoes the persisted set so callers can see
+// any normalisation the daemon did (e.g. trimmed names).
+type RoomSetBindingsResult struct {
+	RoomID   string        `json:"room_id"`
+	Bindings []RoomBinding `json:"bindings"`
+}
+
 // ConversationEventNotification is the payload of NotifyConversationEvt
 // pushed during `room/run` and on the new SSE `/api/rooms/{id}/events`
 // stream. Type names are stable strings (see internal/conversation/bus.go).

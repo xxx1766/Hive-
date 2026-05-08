@@ -192,6 +192,7 @@ func (d *Daemon) Register(srv *ipc.Server) {
 	srv.Handle(ipc.MethodConversationGet, d.handleConversationGet)
 	srv.Handle(ipc.MethodConversationCancel, d.handleConversationCancel)
 	srv.Handle(ipc.MethodConversationDelete, d.handleConversationDelete)
+	srv.Handle(ipc.MethodRoomSetBindings, d.handleRoomSetBindings)
 }
 
 // Shutdown stops every Room. Called when hived receives SIGTERM.
@@ -647,6 +648,43 @@ func (d *Daemon) handleRoomRename(ctx context.Context, params json.RawMessage, _
 	}
 	d.persistRoom(r)
 	return ipc.RoomRenameResult{RoomID: r.ID, Name: name}, nil
+}
+
+// handleRoomSetBindings replaces a Room's Bindings list. PUT-style:
+// the supplied list overwrites whatever was there. Volumes referenced
+// in the list must exist (gated by d.volumes.Get). Empty list clears
+// bindings. Persisted via persistRoom so the value survives restart.
+func (d *Daemon) handleRoomSetBindings(ctx context.Context, params json.RawMessage, _ ipc.NotifyFunc) (any, error) {
+	var p ipc.RoomSetBindingsParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, protocol.NewError(protocol.ErrCodeInvalidParams, err.Error())
+	}
+	// Normalise + validate before taking the lock.
+	out := make([]ipc.RoomBinding, 0, len(p.Bindings))
+	for i, b := range p.Bindings {
+		vol := strings.TrimSpace(b.Volume)
+		if vol == "" {
+			return nil, protocol.NewError(protocol.ErrCodeInvalidParams,
+				fmt.Sprintf("bindings[%d]: volume is required", i))
+		}
+		if _, err := d.volumes.Get(vol); err != nil {
+			return nil, protocol.NewError(protocol.ErrCodeInvalidParams,
+				fmt.Sprintf("bindings[%d]: %v", i, err))
+		}
+		sub := strings.Trim(strings.TrimSpace(b.Subdir), "/")
+		out = append(out, ipc.RoomBinding{Volume: vol, Subdir: sub})
+	}
+	d.mu.Lock()
+	r, ok := d.rooms[p.RoomID]
+	if ok {
+		r.Bindings = out
+	}
+	d.mu.Unlock()
+	if !ok {
+		return nil, protocol.NewError(protocol.ErrCodeRoomNotFound, "room not found: "+p.RoomID)
+	}
+	d.persistRoom(r)
+	return ipc.RoomSetBindingsResult{RoomID: r.ID, Bindings: out}, nil
 }
 
 func (d *Daemon) handleRoomTeam(ctx context.Context, params json.RawMessage, _ ipc.NotifyFunc) (any, error) {
@@ -1114,10 +1152,18 @@ func snapshotFor(r *room.Room) *roomstate.Snapshot {
 		}
 		return ai < aj
 	})
+	// Copy Bindings under the Room's RLock so we get a consistent
+	// view (mutated under r.mu by handleRoomSetBindings).
+	var bindings []ipc.RoomBinding
+	if len(r.Bindings) > 0 {
+		bindings = make([]ipc.RoomBinding, len(r.Bindings))
+		copy(bindings, r.Bindings)
+	}
 	return &roomstate.Snapshot{
-		Version: roomstate.CurrentVersion,
-		Name:    r.Name,
-		Members: out,
+		Version:  roomstate.CurrentVersion,
+		Name:     r.Name,
+		Members:  out,
+		Bindings: bindings,
 	}
 }
 
@@ -1150,6 +1196,18 @@ func (d *Daemon) recoverOne(snap roomstate.Loaded) error {
 	r, err := d.createRoom(snap.RoomID, snap.Name)
 	if err != nil {
 		return fmt.Errorf("createRoom: %w", err)
+	}
+	if len(snap.Snapshot.Bindings) > 0 {
+		// Volumes referenced in old bindings may have been removed
+		// while the daemon was down — drop those, keep the rest. The
+		// next handleRoomSetBindings re-validates anyway.
+		live := make([]ipc.RoomBinding, 0, len(snap.Snapshot.Bindings))
+		for _, b := range snap.Snapshot.Bindings {
+			if _, err := d.volumes.Get(b.Volume); err == nil {
+				live = append(live, b)
+			}
+		}
+		r.Bindings = live
 	}
 	for _, ms := range snap.Members {
 		_, err := d.hireFromConfig(r, hireConfig{

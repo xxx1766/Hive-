@@ -82,6 +82,10 @@ func (b *httpBackend) RoomDetail(roomID string) (httpapi.RoomDetail, bool) {
 			Quota:     b.d.remainingQuota(r.ID, m),
 		})
 	}
+	if len(r.Bindings) > 0 {
+		out.Bindings = make([]ipc.RoomBinding, len(r.Bindings))
+		copy(out.Bindings, r.Bindings)
+	}
 	return out, true
 }
 
@@ -96,6 +100,7 @@ func (d *Daemon) startHTTPAPI() *httpapi.Server {
 		DeleteConversation: d.httpDeleteConversation,
 		RenameRoom:         d.httpRenameRoom,
 		StopRoom:           d.httpStopRoom,
+		SetRoomBindings:    d.httpSetRoomBindings,
 	}
 	srv := httpapi.NewServer(&httpBackend{d: d}, d.convStore, d.convBus, d.volumes, hooks)
 	if err := srv.Start(); err != nil {
@@ -185,6 +190,16 @@ func (d *Daemon) httpDeleteConversation(roomID, convID string) error {
 		return unwrapErr(err)
 	}
 	return nil
+}
+
+func (d *Daemon) httpSetRoomBindings(roomID string, bindings []ipc.RoomBinding) ([]ipc.RoomBinding, error) {
+	body, _ := json.Marshal(ipc.RoomSetBindingsParams{RoomID: roomID, Bindings: bindings})
+	res, err := d.handleRoomSetBindings(nil, body, nil)
+	if err != nil {
+		return nil, unwrapErr(err)
+	}
+	r := res.(ipc.RoomSetBindingsResult)
+	return r.Bindings, nil
 }
 
 // unwrapErr peels protocol.Error so HTTP clients see the bare message.
