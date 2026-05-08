@@ -121,6 +121,23 @@ type Conversation struct {
 
 	FinalAnswer json.RawMessage `json:"final_answer,omitempty"`
 	Error       string          `json:"error,omitempty"`
+
+	// Outputs lists files in mounted Volumes whose mtime falls within
+	// the conversation's run window. Best-effort attribution: works well
+	// when one conversation runs at a time per Room; concurrent convs in
+	// the same Room may share entries. Populated at terminal-state time;
+	// empty for conversations created before this field existed.
+	Outputs []OutputRef `json:"outputs,omitempty"`
+}
+
+// OutputRef points at a file an Agent created (or rewrote) during a
+// Conversation's run window. UI uses these to give the user a
+// one-click jump from "task done" to "the result is here".
+type OutputRef struct {
+	Volume  string    `json:"volume"`
+	Path    string    `json:"path"`     // relative to volume root, posix-style
+	Size    int64     `json:"size"`
+	ModTime time.Time `json:"mod_time"`
 }
 
 // Summary is the compact projection used by list endpoints — drops the
