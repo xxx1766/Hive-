@@ -21,7 +21,8 @@ const (
 	MethodRoomTeam   = "room/team"
 	MethodRoomRun    = "room/run"    // streaming: server emits log/status notifications until final response
 	MethodRoomLogs   = "room/logs"   // snapshot of Agent stderr log files
-	MethodRoomRename = "room/rename" // mutate display Name; RoomID is immutable
+	MethodRoomRename       = "room/rename" // mutate display Name; RoomID is immutable
+	MethodRoomSetBindings  = "room/set-bindings"
 
 	MethodAgentHire = "agent/hire"
 

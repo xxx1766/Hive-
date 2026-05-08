@@ -40,7 +40,12 @@ type Snapshot struct {
 	Version int          `json:"version"`
 	Name    string       `json:"name"`
 	Members []MemberSnap `json:"members"`
-	SavedAt time.Time    `json:"saved_at"`
+	// Bindings are Room-level Volume↔Subdir pairs the UI surfaces to
+	// the user (and optionally injects into conversation task_input).
+	// omitempty keeps existing state.json files untouched after the
+	// upgrade — old daemons reading new files just ignore the field.
+	Bindings []ipc.RoomBinding `json:"bindings,omitempty"`
+	SavedAt  time.Time         `json:"saved_at"`
 }
 
 // MemberSnap mirrors ipc.AgentHireParams (sans RoomID) so recovery can
