@@ -44,6 +44,7 @@ import (
 	"time"
 
 	"github.com/anne-x/hive/internal/conversation"
+	"github.com/anne-x/hive/internal/version"
 	"github.com/anne-x/hive/internal/volume"
 )
 
@@ -247,13 +248,36 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/volumes", s.handleVolumes)
 	mux.HandleFunc("/api/volumes/", s.handleVolumeScoped)
 
-	// SPA — embed.FS rooted at "ui".
+	// SPA — embed.FS rooted at "ui". Wrapped in noCacheMiddleware so
+	// browsers always revalidate after a daemon rebuild — the embedded
+	// HTML changes whenever the binary changes, and without this header
+	// heuristic caching can keep serving stale UI for hours.
 	sub, err := fs.Sub(uiFS, "ui")
 	if err != nil {
 		log.Printf("httpapi: ui embed: %v", err)
 		return
 	}
-	mux.Handle("/", http.FileServer(http.FS(sub)))
+	mux.Handle("/", noCacheMiddleware(http.FileServer(http.FS(sub))))
+}
+
+// noCacheMiddleware sets Cache-Control: no-cache so browsers re-validate
+// the embedded SPA on every navigation. We also set an explicit ETag
+// derived from the daemon version — http.FileServer over embed.FS does
+// not set one (embed mtime is zero), so without this every reload
+// would fetch the full 60 KB body. The ETag value is opaque to the
+// browser and changes 1:1 with the binary, so an unchanged daemon
+// gets a 304 and a rebuilt one gets fresh HTML.
+func noCacheMiddleware(h http.Handler) http.Handler {
+	etag := `"hive-` + version.Version + `"`
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", etag)
+		h.ServeHTTP(w, r)
+	})
 }
 
 // withCORS adds permissive CORS headers — the UI is served from the
