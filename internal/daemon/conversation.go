@@ -196,17 +196,24 @@ func (d *Daemon) runConversation(r *room.Room, c *conversation.Conversation) {
 		return
 	}
 
+	now := time.Now().UTC()
+	// Snapshot the volumes mounted in this Room — the Outputs list lets
+	// the UI jump straight from "task done" to "here's the file your
+	// agent wrote", without the user hunting through every volume.
+	outputs := d.collectConversationOutputs(r, c, now)
 	if err != nil {
 		_, _ = d.convStore.Update(r.ID, c.ID, func(cc *conversation.Conversation) {
 			cc.Status = conversation.StatusFailed
 			cc.Error = err.Error()
-			cc.FinishedAt = time.Now().UTC()
+			cc.FinishedAt = now
+			cc.Outputs = outputs
 		})
 	} else {
 		_, _ = d.convStore.Update(r.ID, c.ID, func(cc *conversation.Conversation) {
 			cc.Status = conversation.StatusDone
 			cc.FinalAnswer = out
-			cc.FinishedAt = time.Now().UTC()
+			cc.FinishedAt = now
+			cc.Outputs = outputs
 			// Append the final answer as a transcript message so a UI
 			// rendering the timeline shows it inline.
 			cc.Messages = append(cc.Messages, conversation.Message{
@@ -216,7 +223,7 @@ func (d *Daemon) runConversation(r *room.Room, c *conversation.Conversation) {
 				To:      "",
 				Kind:    conversation.KindTaskOutput,
 				Payload: out,
-				TS:      time.Now().UTC(),
+				TS:      now,
 				Round:   cc.RoundCount,
 			})
 		})

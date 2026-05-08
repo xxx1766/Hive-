@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8">
 <title>Hive</title>
+<!-- Stops browsers from showing pre-i18n English flash on first paint
+     for users whose default lang is zh — applyI18n() runs in the body
+     script, so we hide tagged elements until then. -->
+<style>[data-i18n]:empty { visibility: hidden; }</style>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
@@ -25,11 +29,17 @@
   <div class="max-w-[1400px] mx-auto px-4 py-3 flex items-center gap-4">
     <h1 class="text-lg font-bold tracking-tight">🐝 Hive</h1>
     <span id="conn-status" class="text-xs text-slate-500 ml-auto"></span>
+    <!-- Language toggle. setLang() flips state + persists to
+         localStorage + re-renders every dynamic region. -->
+    <div class="inline-flex border border-slate-200 rounded overflow-hidden text-[11px]">
+      <button data-lang-btn="en" onclick="setLang('en')" class="px-2 py-0.5 text-slate-500 hover:bg-slate-100" data-i18n="lang.toggle.en">EN</button>
+      <button data-lang-btn="zh" onclick="setLang('zh')" class="px-2 py-0.5 text-slate-500 hover:bg-slate-100" data-i18n="lang.toggle.zh">中</button>
+    </div>
   </div>
   <nav class="max-w-[1400px] mx-auto px-4 flex gap-1 -mb-px">
-    <button data-tab="conversations" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-blue-500 text-blue-600">Conversations</button>
-    <button data-tab="volumes" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-800">Volumes</button>
-    <button data-tab="team" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-800">Team</button>
+    <button data-tab="conversations" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-blue-500 text-blue-600" data-i18n="tab.conversations">Conversations</button>
+    <button data-tab="volumes" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-800" data-i18n="tab.volumes">Volumes</button>
+    <button data-tab="team" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-800" data-i18n="tab.team">Team</button>
   </nav>
 </header>
 
@@ -38,8 +48,8 @@
 <div class="max-w-[1400px] mx-auto flex">
 <aside class="w-[220px] shrink-0 border-r border-slate-200 bg-slate-50/60 px-2 py-3 overflow-y-auto" style="min-height:calc(100vh - 92px);">
   <div class="text-[10px] font-medium text-slate-500 uppercase tracking-wide mb-1.5 px-1 flex items-center gap-1">
-    <span>Rooms</span><span id="room-count" class="text-slate-400 normal-case"></span>
-    <button id="room-refresh" class="ml-auto text-slate-400 hover:text-blue-600 text-sm leading-none px-1" title="Refresh now">↻</button>
+    <span data-i18n="side.rooms">Rooms</span><span id="room-count" class="text-slate-400 normal-case"></span>
+    <button id="room-refresh" class="ml-auto text-slate-400 hover:text-blue-600 text-sm leading-none px-1" data-i18n-title="side.refresh" title="Refresh now">↻</button>
   </div>
   <div id="room-sidebar" class="space-y-1"></div>
 </aside>
@@ -52,10 +62,9 @@
          + new-conv button below is hidden via #conv-main-block. -->
     <div id="conv-empty-hint" class="hidden bg-white border border-dashed border-slate-300 rounded-lg p-8 text-center">
       <div class="text-3xl mb-2">🐝</div>
-      <div class="text-sm font-medium text-slate-700">No Room selected</div>
-      <div class="text-xs text-slate-500 mt-2 leading-relaxed">
-        Run <code class="bg-slate-100 px-1.5 py-0.5 rounded font-mono text-slate-700">hive hire -f hivefiles/&lt;file&gt;.yaml</code> in another shell.<br>
-        New Rooms appear in the sidebar within ~2 seconds and are auto-selected when this is your first one.
+      <div class="text-sm font-medium text-slate-700" data-i18n="conv.empty.title">No Room selected</div>
+      <div class="text-xs text-slate-500 mt-2 leading-relaxed" data-i18n="conv.empty.body">
+        Run hive hire -f hivefiles/&lt;file&gt;.yaml in another shell. New Rooms appear in the sidebar within ~2 seconds and are auto-selected when this is your first one.
       </div>
     </div>
     <div id="conv-main-block">
@@ -65,7 +74,7 @@
         <span class="text-slate-400 mx-2">|</span>
         <span id="conv-counts"></span>
       </div>
-      <button id="new-conv-btn" class="bg-blue-600 hover:bg-blue-700 text-white text-sm px-3 py-1.5 rounded font-medium">+ New conversation</button>
+      <button id="new-conv-btn" class="bg-blue-600 hover:bg-blue-700 text-white text-sm px-3 py-1.5 rounded font-medium" data-i18n="conv.new">+ New conversation</button>
     </div>
 
     <div class="grid grid-cols-3 gap-4">
@@ -73,7 +82,7 @@
       <div class="bg-white rounded-lg shadow-sm border border-slate-200 flex flex-col min-h-[420px]">
         <div class="px-3 py-2 border-b border-slate-200 flex items-center gap-2">
           <span class="w-2 h-2 rounded-full bg-slate-400"></span>
-          <span class="font-semibold text-sm">Plan</span>
+          <span class="font-semibold text-sm" data-i18n="conv.col.plan">Plan</span>
           <span id="col-plan-count" class="ml-auto text-xs text-slate-500 badge"></span>
         </div>
         <div id="col-plan" class="p-3 space-y-2 flex-1 overflow-y-auto scrollbar"></div>
@@ -83,7 +92,7 @@
       <div class="bg-white rounded-lg shadow-sm border border-blue-200 flex flex-col min-h-[420px]">
         <div class="px-3 py-2 border-b border-blue-200 bg-blue-50/60 flex items-center gap-2">
           <span class="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
-          <span class="font-semibold text-sm">In progress</span>
+          <span class="font-semibold text-sm" data-i18n="conv.col.active">In progress</span>
           <span id="col-active-count" class="ml-auto text-xs text-blue-600 badge"></span>
         </div>
         <div id="col-active" class="p-3 space-y-2 flex-1 overflow-y-auto scrollbar"></div>
@@ -93,7 +102,7 @@
       <div class="bg-white rounded-lg shadow-sm border border-slate-200 flex flex-col min-h-[420px]">
         <div class="px-3 py-2 border-b border-slate-200 flex items-center gap-2">
           <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-          <span class="font-semibold text-sm">Done</span>
+          <span class="font-semibold text-sm" data-i18n="conv.col.done">Done</span>
           <span id="col-done-count" class="ml-auto text-xs text-slate-500 badge"></span>
         </div>
         <div id="col-done" class="p-3 space-y-2 flex-1 overflow-y-auto scrollbar"></div>
@@ -106,9 +115,15 @@
         <h2 id="timeline-title" class="text-sm font-semibold flex-1"></h2>
         <span id="timeline-status" class="text-xs px-2 py-0.5 rounded font-medium"></span>
         <span id="timeline-rounds" class="text-xs text-slate-500 badge"></span>
-        <button id="timeline-cancel-btn" class="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-2 py-1 rounded hidden">Cancel</button>
+        <button id="timeline-cancel-btn" class="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-2 py-1 rounded hidden" data-i18n="conv.cancel_btn">Cancel</button>
         <button id="timeline-close-btn" class="text-xs text-slate-400 hover:text-slate-700">✕</button>
       </div>
+      <!-- Outcome banner: rendered when conversation is in a terminal
+           state (done/failed/cancelled/interrupted). Shows status, the
+           lifted final answer, and the list of files written during
+           the run window so the user doesn't have to scroll the
+           message stream to find "where did the output go". -->
+      <div id="timeline-outcome" class="hidden border-b border-slate-200"></div>
       <div id="timeline-body" class="p-4 space-y-2 max-h-[520px] overflow-y-auto scrollbar font-mono text-xs"></div>
     </div>
     </div><!-- /conv-main-block -->
@@ -119,7 +134,7 @@
     <div class="grid grid-cols-12 gap-4">
       <div class="col-span-4 bg-white rounded-lg shadow-sm border border-slate-200 flex flex-col min-h-[480px]">
         <div class="px-3 py-2 border-b border-slate-200 flex items-center gap-2">
-          <span class="font-semibold text-sm">Volumes</span>
+          <span class="font-semibold text-sm" data-i18n="vol.title">Volumes</span>
           <span id="vol-scope-label" class="text-[10px] text-slate-500"></span>
           <button id="vol-scope-toggle" class="ml-auto text-[11px] text-blue-600 hover:underline"></button>
         </div>
@@ -127,7 +142,7 @@
       </div>
       <div class="col-span-8 bg-white rounded-lg shadow-sm border border-slate-200 flex flex-col min-h-[480px]">
         <div class="px-3 py-2 border-b border-slate-200 font-semibold text-sm flex items-center gap-2">
-          <span id="vol-file-name" class="font-mono text-xs text-slate-700">select a file</span>
+          <span id="vol-file-name" class="font-mono text-xs text-slate-700" data-i18n="vol.select_file">select a file</span>
           <span id="vol-file-size" class="text-xs text-slate-400 ml-auto"></span>
         </div>
         <pre id="vol-file-body" class="p-3 overflow-auto scrollbar text-xs font-mono whitespace-pre-wrap break-words flex-1"></pre>
@@ -141,11 +156,11 @@
       <table class="w-full text-sm">
         <thead class="bg-slate-50 border-b border-slate-200">
           <tr>
-            <th class="text-left px-3 py-2 font-semibold">Agent</th>
-            <th class="text-left px-3 py-2 font-semibold">Rank</th>
-            <th class="text-left px-3 py-2 font-semibold">Model</th>
-            <th class="text-left px-3 py-2 font-semibold">Volumes</th>
-            <th class="text-left px-3 py-2 font-semibold">Quota</th>
+            <th class="text-left px-3 py-2 font-semibold" data-i18n="team.agent">Agent</th>
+            <th class="text-left px-3 py-2 font-semibold" data-i18n="team.rank">Rank</th>
+            <th class="text-left px-3 py-2 font-semibold" data-i18n="team.model">Model</th>
+            <th class="text-left px-3 py-2 font-semibold" data-i18n="team.volumes">Volumes</th>
+            <th class="text-left px-3 py-2 font-semibold" data-i18n="team.quota">Quota</th>
           </tr>
         </thead>
         <tbody id="team-body"></tbody>
@@ -158,51 +173,51 @@
 <!-- ── New conversation modal ────────────────────────────────────────── -->
 <div id="new-conv-modal" class="fixed inset-0 bg-black/40 hidden items-center justify-center z-30">
   <div class="bg-white rounded-lg shadow-xl p-5 w-[420px]">
-    <h3 class="font-semibold mb-3">New conversation</h3>
+    <h3 class="font-semibold mb-3" data-i18n="modal.title">New conversation</h3>
     <div class="space-y-3">
       <label class="block">
-        <span class="text-xs font-medium text-slate-700">Tag (optional)</span>
-        <input id="nc-tag" class="mt-0.5 w-full border border-slate-300 rounded px-2 py-1 text-sm" placeholder="e.g. design-section">
+        <span class="text-xs font-medium text-slate-700" data-i18n="modal.tag">Tag (optional)</span>
+        <input id="nc-tag" class="mt-0.5 w-full border border-slate-300 rounded px-2 py-1 text-sm" data-i18n-placeholder="modal.tag_ph" placeholder="e.g. design-section">
       </label>
       <label class="block">
-        <span class="text-xs font-medium text-slate-700">Target agent</span>
+        <span class="text-xs font-medium text-slate-700" data-i18n="modal.target">Target agent</span>
         <select id="nc-target" class="mt-0.5 w-full border border-slate-300 rounded px-2 py-1 text-sm bg-white"></select>
       </label>
       <label class="block">
-        <span class="text-xs font-medium text-slate-700">Initial input (JSON)</span>
+        <span class="text-xs font-medium text-slate-700" data-i18n="modal.input">Initial input (JSON)</span>
         <textarea id="nc-input" rows="4" class="mt-0.5 w-full border border-slate-300 rounded px-2 py-1 text-sm font-mono">{"section":"design"}</textarea>
       </label>
       <label class="block">
-        <span class="text-xs font-medium text-slate-700">Max rounds</span>
+        <span class="text-xs font-medium text-slate-700" data-i18n="modal.rounds">Max rounds</span>
         <input id="nc-rounds" type="number" min="1" value="8" class="mt-0.5 w-full border border-slate-300 rounded px-2 py-1 text-sm">
       </label>
       <label class="flex items-center gap-2">
         <input type="checkbox" id="nc-autostart" checked>
-        <span class="text-xs">Start immediately</span>
+        <span class="text-xs" data-i18n="modal.autostart">Start immediately</span>
       </label>
       <div class="border-t border-slate-200 pt-3">
         <label class="flex items-center gap-2">
           <input type="checkbox" id="nc-xroom">
-          <span class="text-xs font-medium text-slate-700">Cross-Room — invite agents from other Rooms</span>
+          <span class="text-xs font-medium text-slate-700" data-i18n="modal.xroom">Cross-Room — invite agents from other Rooms</span>
         </label>
         <div id="nc-xroom-panel" class="hidden mt-2 space-y-2">
           <div class="flex gap-1.5">
             <select id="nc-xroom-room" class="border border-slate-300 rounded px-2 py-1 text-sm bg-white flex-1"></select>
             <select id="nc-xroom-agent" class="border border-slate-300 rounded px-2 py-1 text-sm bg-white flex-1"></select>
-            <button id="nc-xroom-add" class="bg-slate-200 hover:bg-slate-300 px-2 py-1 rounded text-xs font-medium">+ Add</button>
+            <button id="nc-xroom-add" class="bg-slate-200 hover:bg-slate-300 px-2 py-1 rounded text-xs font-medium" data-i18n="modal.xroom_add">+ Add</button>
           </div>
           <div id="nc-xroom-chips" class="flex flex-wrap gap-1"></div>
-          <p class="text-[10px] text-slate-500">Initial target is auto-included; add agents from other Rooms here.</p>
+          <p class="text-[10px] text-slate-500" data-i18n="modal.xroom_hint">Initial target is auto-included; add agents from other Rooms here.</p>
         </div>
       </div>
       <div class="border-t border-slate-200 pt-3">
-        <div class="text-xs font-medium text-slate-700 mb-1.5">Files (optional)</div>
+        <div class="text-xs font-medium text-slate-700 mb-1.5" data-i18n="modal.files_section">Files (optional)</div>
         <div class="flex gap-1.5 items-center">
           <select id="nc-vol" class="border border-slate-300 rounded px-2 py-1 text-sm bg-white flex-1"></select>
         </div>
         <div id="nc-vol-create-panel" class="hidden mt-2 flex gap-1.5">
-          <input id="nc-vol-create-name" maxlength="64" placeholder="new volume name" class="border border-slate-300 rounded px-2 py-1 text-sm flex-1">
-          <button id="nc-vol-create-btn" class="bg-slate-200 hover:bg-slate-300 px-2 py-1 rounded text-xs font-medium">Create</button>
+          <input id="nc-vol-create-name" maxlength="64" data-i18n-placeholder="modal.vol_create_ph" placeholder="new volume name" class="border border-slate-300 rounded px-2 py-1 text-sm flex-1">
+          <button id="nc-vol-create-btn" class="bg-slate-200 hover:bg-slate-300 px-2 py-1 rounded text-xs font-medium" data-i18n="modal.vol_create_btn">Create</button>
           <button id="nc-vol-create-cancel" class="text-slate-400 hover:text-slate-700 text-xs px-1">×</button>
         </div>
         <div id="nc-files-row" class="hidden mt-2 space-y-1.5">
@@ -210,25 +225,333 @@
             <input type="file" id="nc-file-input" multiple class="text-xs flex-1">
           </div>
           <div class="flex gap-1.5 items-center">
-            <input id="nc-url-input" type="url" placeholder="https://..." class="border border-slate-300 rounded px-2 py-1 text-sm flex-1">
-            <button id="nc-url-add" class="bg-slate-200 hover:bg-slate-300 px-2 py-1 rounded text-xs font-medium">+ URL</button>
+            <input id="nc-url-input" type="url" data-i18n-placeholder="modal.url_ph" placeholder="https://..." class="border border-slate-300 rounded px-2 py-1 text-sm flex-1">
+            <button id="nc-url-add" class="bg-slate-200 hover:bg-slate-300 px-2 py-1 rounded text-xs font-medium" data-i18n="modal.url_add">+ URL</button>
           </div>
           <div id="nc-uploads-chips" class="flex flex-wrap gap-1"></div>
-          <p class="text-[10px] text-slate-500">Files land at <code class="font-mono">&lt;volume&gt;/uploads/&lt;filename&gt;</code>. To make a newly-created Volume reachable from existing Agents, re-hire them with <code class="font-mono">--volume</code>.</p>
+          <p class="text-[10px] text-slate-500" data-i18n="modal.files_hint" data-i18n-html="true">Files land at <code class="font-mono">&lt;volume&gt;/uploads/&lt;filename&gt;</code>. To make a newly-created Volume reachable from existing Agents, re-hire them with <code class="font-mono">--volume</code>.</p>
         </div>
       </div>
     </div>
     <div class="mt-4 flex items-center gap-2">
       <span id="nc-status" class="text-xs text-slate-500"></span>
       <div class="ml-auto flex gap-2">
-        <button id="nc-cancel" class="px-3 py-1.5 text-sm border border-slate-300 rounded">Cancel</button>
-        <button id="nc-submit" class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded font-medium">Create</button>
+        <button id="nc-cancel" class="px-3 py-1.5 text-sm border border-slate-300 rounded" data-i18n="modal.cancel">Cancel</button>
+        <button id="nc-submit" class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded font-medium" data-i18n="modal.create_btn">Create</button>
       </div>
     </div>
   </div>
 </div>
 
 <script>
+// ── i18n ──────────────────────────────────────────────────────────
+//
+// Dictionary-driven, no external lib. Two locales today (en, zh);
+// adding more is one entry per key. Default language is detected from
+// navigator.language (zh-* → zh, otherwise en) and persisted to
+// localStorage on every toggle. Static strings get data-i18n="<key>"
+// attributes so applyI18n() can flip them in one DOM walk; dynamic
+// strings inside JS template literals call t(key, vars) directly.
+//
+// {var} interpolation is supported on all dict values for plurals or
+// embedded counts ("{n} rooms" → "{n} 个房间"). Fallback chain is:
+// requested locale → en → key → defaultLabel arg.
+const I18N = {
+  en: {
+    'app.subtitle': 'Docker for Agents',
+    'tab.conversations': 'Conversations',
+    'tab.volumes': 'Volumes',
+    'tab.team': 'Team',
+    'side.rooms': 'Rooms',
+    'side.refresh': 'Refresh now',
+    'side.no_rooms': 'no rooms hired',
+    'side.no_rooms_hint': 'run `hive hire -f …`',
+    'side.delete_room': 'Delete room',
+    'side.rename': 'Rename',
+    'side.conv_count': '{n} convs',
+    'conv.empty.title': 'No Room selected',
+    'conv.empty.body': 'Run `hive hire -f hivefiles/<file>.yaml` in another shell. New Rooms appear in the sidebar within ~2 seconds and are auto-selected when this is your first one.',
+    'conv.col.plan': 'Plan',
+    'conv.col.active': 'In progress',
+    'conv.col.done': 'Done',
+    'conv.col.empty': 'empty',
+    'conv.new': '+ New conversation',
+    'conv.counts': '{plan} planned · {active} in progress · {done} done',
+    'conv.rounds_short': '{r}/{m} rds',
+    'conv.rounds_long': '{r}/{m} rounds',
+    'conv.delete': 'Delete conversation',
+    'conv.delete_confirm': 'Delete conversation "{label}"?\nIf it\'s still running, it will be cancelled first. The transcript file is removed and cannot be recovered.',
+    'conv.delete_failed': 'Delete failed: {err}',
+    'conv.cancel': 'Cancel',
+    'conv.cancel_confirm': 'Cancel this conversation?',
+    'conv.cancel_btn': 'Cancel',
+    'conv.start_now': '▶ Start now',
+    'conv.no_messages': 'no messages yet — waiting for first dispatch',
+    'conv.xroom_badge': '↔ {n} rooms',
+    'modal.title': 'New conversation',
+    'modal.tag': 'Tag (optional)',
+    'modal.tag_ph': 'e.g. design-section',
+    'modal.target': 'Target agent',
+    'modal.input': 'Initial input (JSON)',
+    'modal.rounds': 'Max rounds',
+    'modal.autostart': 'Start immediately',
+    'modal.xroom': 'Cross-Room — invite agents from other Rooms',
+    'modal.xroom_hint': 'Initial target is auto-included; add agents from other Rooms here.',
+    'modal.xroom_no_others': '(no other rooms)',
+    'modal.xroom_add': '+ Add',
+    'modal.xroom_loading': '(loading…)',
+    'modal.xroom_failed': '(failed: {err})',
+    'modal.files_section': 'Files (optional)',
+    'modal.vol_none': '(none — skip uploads)',
+    'modal.vol_mounted': '{name}  (mounted)',
+    'modal.vol_not_mounted': '{name}  (not mounted)',
+    'modal.vol_create_opt': '+ create new volume…',
+    'modal.vol_create_ph': 'new volume name',
+    'modal.vol_create_btn': 'Create',
+    'modal.url_ph': 'https://...',
+    'modal.url_add': '+ URL',
+    'modal.files_hint': 'Files land at <code class="font-mono">&lt;volume&gt;/uploads/&lt;filename&gt;</code>. To make a newly-created Volume reachable from existing Agents, re-hire them with <code class="font-mono">--volume</code>.',
+    'modal.uploads_progress': 'Uploading {i}/{n} — {name}…',
+    'modal.uploads_failed': 'Upload failed: {err}',
+    'modal.upload_pick_volume': 'Pick a target Volume for the staged files (or remove them).',
+    'modal.create_failed': 'Create failed: {err}',
+    'modal.create_volume_required': 'volume name is required',
+    'modal.create_volume_failed': 'Create volume failed: {err}',
+    'modal.invalid_url': 'invalid URL: {err}',
+    'modal.invalid_input_json': 'Input is not valid JSON: {err}',
+    'modal.cancel': 'Cancel',
+    'modal.create_btn': 'Create',
+    'vol.title': 'Volumes',
+    'vol.scope.room': '· mounted in {room}',
+    'vol.scope.all': '· all volumes',
+    'vol.show_all': 'Show all',
+    'vol.filter_to': 'Filter to {room}',
+    'vol.empty.global': 'no volumes',
+    'vol.empty.room': 'no volumes mounted in this Room.<br>Hire an Agent with <code class="font-mono">--volume</code>, or click "Show all" to see global volumes.',
+    'vol.select_file': 'select a file',
+    'vol.back': '← back to volumes',
+    'team.agent': 'Agent',
+    'team.rank': 'Rank',
+    'team.model': 'Model',
+    'team.volumes': 'Volumes',
+    'team.quota': 'Quota',
+    'team.hired_by': 'hired by {parent}',
+    'team.default_model': '(default)',
+    'status.live': 'live',
+    'status.live_ev': 'live · {ev}',
+    'status.connecting': 'connecting…',
+    'status.disconnected': 'disconnected — reconnecting',
+    'status.connect_failed': 'connect failed: {err}',
+    'status.no_rooms_hint': 'no Rooms — run `hive hire -f ...` to add one',
+    'status.rename_failed': 'Rename failed: {err}',
+    'room.delete_confirm': 'Delete Room "{name}"?\nAll Agents will be terminated and the Room\'s persisted state will be dropped. This cannot be undone.',
+    'kind.task_input': 'Input',
+    'kind.peer': 'Message',
+    'kind.task_output': 'Output',
+    'kind.error': 'Error',
+    'kind.log': 'Log',
+    'kind.round_cap': 'Round cap',
+    'status_label.planned': 'planned',
+    'status_label.active': 'active',
+    'status_label.done': 'done',
+    'status_label.failed': 'failed',
+    'status_label.cancelled': 'cancelled',
+    'status_label.interrupted': 'interrupted',
+    'outcome.done': '✅ Done',
+    'outcome.failed': '❌ Failed',
+    'outcome.cancelled': '⊘ Cancelled',
+    'outcome.interrupted': '⚠ Interrupted',
+    'outcome.duration': '({rounds} rounds, {seconds}s)',
+    'outcome.final_answer': 'Final answer',
+    'outcome.outputs_title': 'Files written during this run',
+    'outcome.no_outputs': 'no files were written to mounted volumes',
+    'outcome.outputs_hint': 'Click a file to open it in the Volumes tab.',
+    'outcome.copy': 'Copy answer',
+    'outcome.copied': 'Copied!',
+    'outcome.error_label': 'Error',
+    'lang.toggle.en': 'EN',
+    'lang.toggle.zh': '中',
+    'details': '[+] details (raw)',
+  },
+  zh: {
+    'app.subtitle': '为 Agent 而生的容器',
+    'tab.conversations': '对话',
+    'tab.volumes': '存储卷',
+    'tab.team': '团队',
+    'side.rooms': '房间',
+    'side.refresh': '立即刷新',
+    'side.no_rooms': '尚未招聘任何房间',
+    'side.no_rooms_hint': '运行 `hive hire -f …`',
+    'side.delete_room': '删除房间',
+    'side.rename': '重命名',
+    'side.conv_count': '{n} 个对话',
+    'conv.empty.title': '未选择房间',
+    'conv.empty.body': '在另一个 shell 中运行 `hive hire -f hivefiles/<file>.yaml`。新房间会在约 2 秒内出现在侧边栏，首次创建时会自动选中。',
+    'conv.col.plan': '计划',
+    'conv.col.active': '进行中',
+    'conv.col.done': '已完成',
+    'conv.col.empty': '暂无',
+    'conv.new': '+ 新对话',
+    'conv.counts': '计划 {plan} · 进行中 {active} · 完成 {done}',
+    'conv.rounds_short': '{r}/{m} 轮',
+    'conv.rounds_long': '{r}/{m} 轮',
+    'conv.delete': '删除对话',
+    'conv.delete_confirm': '删除对话 "{label}"？\n如果对话仍在进行，会先取消再删除。文字记录文件会被删除且无法恢复。',
+    'conv.delete_failed': '删除失败：{err}',
+    'conv.cancel': '取消',
+    'conv.cancel_confirm': '确认取消该对话？',
+    'conv.cancel_btn': '取消',
+    'conv.start_now': '▶ 立即开始',
+    'conv.no_messages': '暂无消息 — 等待首次派发',
+    'conv.xroom_badge': '↔ 跨 {n} 个房间',
+    'modal.title': '新建对话',
+    'modal.tag': '标签（可选）',
+    'modal.tag_ph': '例如 design-section',
+    'modal.target': '目标 Agent',
+    'modal.input': '初始输入（JSON）',
+    'modal.rounds': '最大轮数',
+    'modal.autostart': '立即开始',
+    'modal.xroom': '跨房间 — 邀请其他房间的 Agent',
+    'modal.xroom_hint': '初始目标会自动加入；在此添加其他房间的 Agent。',
+    'modal.xroom_no_others': '（无其他房间）',
+    'modal.xroom_add': '+ 添加',
+    'modal.xroom_loading': '（加载中…）',
+    'modal.xroom_failed': '（加载失败：{err}）',
+    'modal.files_section': '文件（可选）',
+    'modal.vol_none': '（无 — 跳过上传）',
+    'modal.vol_mounted': '{name}  （已挂载）',
+    'modal.vol_not_mounted': '{name}  （未挂载）',
+    'modal.vol_create_opt': '+ 新建存储卷…',
+    'modal.vol_create_ph': '新存储卷名称',
+    'modal.vol_create_btn': '创建',
+    'modal.url_ph': 'https://...',
+    'modal.url_add': '+ URL',
+    'modal.files_hint': '文件会保存到 <code class="font-mono">&lt;volume&gt;/uploads/&lt;filename&gt;</code>。要让现有 Agent 看到新建的存储卷，需要带 <code class="font-mono">--volume</code> 重新 hire。',
+    'modal.uploads_progress': '上传中 {i}/{n} — {name}…',
+    'modal.uploads_failed': '上传失败：{err}',
+    'modal.upload_pick_volume': '请为待上传文件选择目标存储卷（或先移除文件）。',
+    'modal.create_failed': '创建失败：{err}',
+    'modal.create_volume_required': '存储卷名称必填',
+    'modal.create_volume_failed': '创建存储卷失败：{err}',
+    'modal.invalid_url': '无效的 URL：{err}',
+    'modal.invalid_input_json': '输入不是合法 JSON：{err}',
+    'modal.cancel': '取消',
+    'modal.create_btn': '创建',
+    'vol.title': '存储卷',
+    'vol.scope.room': '· 已挂载于 {room}',
+    'vol.scope.all': '· 所有存储卷',
+    'vol.show_all': '显示全部',
+    'vol.filter_to': '只看 {room}',
+    'vol.empty.global': '暂无存储卷',
+    'vol.empty.room': '该房间没有挂载任何存储卷。<br>请用 <code class="font-mono">--volume</code> 重新 hire 一个 Agent，或点击"显示全部"查看全局存储卷。',
+    'vol.select_file': '选择一个文件',
+    'vol.back': '← 返回存储卷列表',
+    'team.agent': 'Agent',
+    'team.rank': '职级',
+    'team.model': '模型',
+    'team.volumes': '存储卷',
+    'team.quota': '配额',
+    'team.hired_by': '由 {parent} 招募',
+    'team.default_model': '（默认）',
+    'status.live': '在线',
+    'status.live_ev': '在线 · {ev}',
+    'status.connecting': '连接中…',
+    'status.disconnected': '已断开 — 重连中',
+    'status.connect_failed': '连接失败：{err}',
+    'status.no_rooms_hint': '没有房间 — 运行 `hive hire -f ...` 添加一个',
+    'status.rename_failed': '重命名失败：{err}',
+    'room.delete_confirm': '删除房间 "{name}"？\n所有 Agent 都会被终止，房间的持久化状态也会被丢弃，且无法恢复。',
+    'kind.task_input': '输入',
+    'kind.peer': '消息',
+    'kind.task_output': '输出',
+    'kind.error': '错误',
+    'kind.log': '日志',
+    'kind.round_cap': '轮次上限',
+    'status_label.planned': '计划中',
+    'status_label.active': '进行中',
+    'status_label.done': '完成',
+    'status_label.failed': '失败',
+    'status_label.cancelled': '已取消',
+    'status_label.interrupted': '中断',
+    'outcome.done': '✅ 完成',
+    'outcome.failed': '❌ 失败',
+    'outcome.cancelled': '⊘ 已取消',
+    'outcome.interrupted': '⚠ 已中断',
+    'outcome.duration': '（{rounds} 轮，{seconds} 秒）',
+    'outcome.final_answer': '最终回答',
+    'outcome.outputs_title': '本次运行写入的文件',
+    'outcome.no_outputs': '本次运行未向挂载的存储卷写入文件',
+    'outcome.outputs_hint': '点击文件可在"存储卷"标签页中打开。',
+    'outcome.copy': '复制回答',
+    'outcome.copied': '已复制！',
+    'outcome.error_label': '错误',
+    'lang.toggle.en': 'EN',
+    'lang.toggle.zh': '中',
+    'details': '[+] 原始 JSON',
+  },
+};
+
+let LANG = (function() {
+  const saved = (typeof localStorage !== 'undefined') ? localStorage.getItem('hive-lang') : null;
+  if (saved === 'en' || saved === 'zh') return saved;
+  const nav = (typeof navigator !== 'undefined' && navigator.language) || '';
+  return nav.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+})();
+
+// t looks up a localised string. Vars are interpolated as {name}.
+// `fallback` is what to return if the key is missing in BOTH the
+// active locale AND English — useful for pass-through display labels.
+function t(key, vars, fallback) {
+  let s = (I18N[LANG] && I18N[LANG][key]) || I18N.en[key];
+  if (s == null) s = (fallback != null ? fallback : key);
+  if (vars) {
+    for (const k of Object.keys(vars)) {
+      s = s.replaceAll('{' + k + '}', vars[k]);
+    }
+  }
+  return s;
+}
+
+// applyI18n walks every element with a data-i18n* attribute and
+// rewrites the corresponding property. Called on bootstrap and after
+// every language toggle. Idempotent.
+function applyI18n() {
+  document.documentElement.setAttribute('lang', LANG === 'zh' ? 'zh-CN' : 'en');
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const html = el.dataset.i18nHtml === 'true';
+    const txt = t(el.dataset.i18n);
+    if (html) el.innerHTML = txt; else el.textContent = txt;
+  });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+    el.placeholder = t(el.dataset.i18nPlaceholder);
+  });
+  document.querySelectorAll('[data-i18n-title]').forEach(el => {
+    el.title = t(el.dataset.i18nTitle);
+  });
+}
+
+// setLang flips the active locale, persists it, re-applies static
+// strings, and re-renders every dynamic region.
+function setLang(next) {
+  if (next !== 'en' && next !== 'zh') return;
+  LANG = next;
+  try { localStorage.setItem('hive-lang', next); } catch {}
+  applyI18n();
+  // Refresh every renderer that interpolates t() directly.
+  renderRoomSidebar();
+  renderKanban();
+  if (state.selectedConv) renderTimeline();
+  renderTeam();
+  renderVolumeList();
+  // Update the toggle button's pressed state.
+  document.querySelectorAll('[data-lang-btn]').forEach(b => {
+    const sel = b.dataset.langBtn === LANG;
+    b.classList.toggle('bg-blue-600', sel);
+    b.classList.toggle('text-white', sel);
+    b.classList.toggle('text-slate-500', !sel);
+  });
+}
+
 // ── State ──────────────────────────────────────────────────────────
 const state = {
   rooms: [],
@@ -298,7 +621,7 @@ async function bootstrap() {
     setEmptyState();
     renderVolumeList();
   } catch (e) {
-    setStatus('connect failed: ' + e.message, true);
+    setStatus(t('status.connect_failed', {err: e.message}), true);
   }
 }
 
@@ -322,7 +645,7 @@ function setEmptyState() {
   document.getElementById('conv-empty-hint').classList.toggle('hidden', !empty);
   document.getElementById('conv-main-block').classList.toggle('hidden', empty);
   if (empty) {
-    setStatus('no Rooms — run `hive hire -f ...` to add one', true);
+    setStatus(t('status.no_rooms_hint'), true);
   }
 }
 
@@ -335,7 +658,7 @@ function renderRoomSidebar() {
   countEl.textContent = state.rooms.length ? `· ${state.rooms.length}` : '';
   wrap.innerHTML = '';
   if (state.rooms.length === 0) {
-    wrap.innerHTML = '<div class="text-xs text-slate-400 italic px-1 py-2">no rooms hired<br>run <code>hive hire -f …</code></div>';
+    wrap.innerHTML = `<div class="text-xs text-slate-400 italic px-1 py-2">${escapeHtml(t('side.no_rooms'))}<br>${escapeHtml(t('side.no_rooms_hint'))}</div>`;
     return;
   }
   for (const r of state.rooms) {
@@ -375,11 +698,11 @@ function roomSidebarItem(r) {
   item.innerHTML = `
     <div class="flex items-center gap-1">
       <span class="font-medium text-sm flex-1 truncate" title="${escapeHtml(r.name)}">${escapeHtml(r.name)}</span>
-      <button class="rename-btn opacity-0 group-hover:opacity-100 text-slate-400 hover:text-blue-600 text-xs px-1" title="Rename">✎</button>
-      <button class="delete-btn opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-600 text-xs px-1" title="Delete room">×</button>
+      <button class="rename-btn opacity-0 group-hover:opacity-100 text-slate-400 hover:text-blue-600 text-xs px-1" title="${escapeHtml(t('side.rename'))}">✎</button>
+      <button class="delete-btn opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-600 text-xs px-1" title="${escapeHtml(t('side.delete_room'))}">×</button>
     </div>
     <div class="text-[10px] text-slate-500 flex items-center gap-1 badge">
-      <span>${total} ${total === 1 ? 'conv' : 'convs'}</span>
+      <span>${escapeHtml(t('side.conv_count', {n: total}))}</span>
       <span class="text-slate-300 truncate" title="${escapeHtml(r.room_id)}">· ${escapeHtml(r.room_id.slice(-12))}</span>
     </div>`;
   // Click anywhere except action buttons → switch room.
@@ -394,7 +717,7 @@ function roomSidebarItem(r) {
   });
   item.querySelector('.delete-btn').addEventListener('click', async e => {
     e.stopPropagation();
-    if (!confirm(`Delete Room "${r.name}"?\nAll Agents will be terminated and the Room's persisted state will be dropped. This cannot be undone.`)) return;
+    if (!confirm(t('room.delete_confirm', {name: r.name}))) return;
     try {
       await api(`/api/rooms/${r.room_id}`, {method: 'DELETE'});
       const wasCurrent = r.room_id === state.currentRoomID;
@@ -415,7 +738,7 @@ function roomSidebarItem(r) {
         renderRoomSidebar();
       }
     } catch (err) {
-      alert('Delete failed: ' + err.message);
+      alert(t('conv.delete_failed', {err: err.message}));
     }
   });
   return item;
@@ -441,7 +764,7 @@ async function commitRename(roomID, rawName) {
       document.getElementById('conv-room-tag').textContent = res.name;
     }
   } catch (e) {
-    alert('Rename failed: ' + e.message);
+    alert(t('status.rename_failed', {err: e.message}));
     cancelRename();
   }
 }
@@ -458,7 +781,7 @@ async function selectRoom(roomID) {
 
   renderRoomSidebar(); // re-paint to update active highlight
   setEmptyState();     // hide empty hint, show kanban
-  setStatus('live');
+  setStatus(t('status.live'));
   await reloadConversations();
   renderTeam();
   // Volumes tab is room-scoped by default — re-render so the panel
@@ -504,15 +827,14 @@ function renderKanban() {
   document.getElementById('col-done-count').textContent = cols.done.length;
 
   const counts = { plan: cols.plan.length, active: cols.active.length, done: cols.done.length };
-  document.getElementById('conv-counts').textContent =
-    `${counts.plan} planned · ${counts.active} in progress · ${counts.done} done`;
+  document.getElementById('conv-counts').textContent = t('conv.counts', counts);
 }
 
 function paintColumn(elID, items) {
   const el = document.getElementById(elID);
   el.innerHTML = '';
   if (items.length === 0) {
-    el.innerHTML = `<div class="text-xs text-slate-400 italic px-1 py-2">empty</div>`;
+    el.innerHTML = `<div class="text-xs text-slate-400 italic px-1 py-2">${escapeHtml(t('conv.col.empty'))}</div>`;
     return;
   }
   for (const c of items) {
@@ -549,18 +871,18 @@ function convCard(c) {
     return rs.size >= 2 ? rs.size : 0;
   })();
   const xRoomBadge = xRoomCount > 0
-    ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 badge" title="cross-Room conversation">↔ ${xRoomCount} rooms</span>`
+    ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 badge" title="cross-Room conversation">${escapeHtml(t('conv.xroom_badge', {n: xRoomCount}))}</span>`
     : '';
   card.innerHTML = `
     <div class="flex items-start gap-2">
-      <span class="text-[10px] font-mono px-1.5 py-0.5 rounded ${statusColor} badge">${c.status}</span>
+      <span class="text-[10px] font-mono px-1.5 py-0.5 rounded ${statusColor} badge">${escapeHtml(statusLabel(c.status))}</span>
       <span class="font-medium text-sm flex-1 truncate" title="${escapeHtml(tag)}">${escapeHtml(tag)}</span>
       ${xRoomBadge}
-      <button class="conv-delete-btn opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-600 text-xs leading-none px-1" title="Delete conversation">×</button>
+      <button class="conv-delete-btn opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-600 text-xs leading-none px-1" title="${escapeHtml(t('conv.delete'))}">×</button>
     </div>
     <div class="mt-1 text-xs text-slate-500 flex items-center gap-2 badge">
       <span>→ <b style="color:${colorFor(c.initial_target)}">${escapeHtml(c.initial_target)}</b></span>
-      <span class="ml-auto">${c.round_count}/${c.max_rounds} rds</span>
+      <span class="ml-auto">${escapeHtml(t('conv.rounds_short', {r: c.round_count, m: c.max_rounds}))}</span>
     </div>
     ${isActive ? '<div class="mt-1.5"><span class="typing"></span><span class="typing"></span><span class="typing"></span></div>' : ''}
     <div class="text-[10px] text-slate-400 mt-1 badge">${created}</div>
@@ -568,7 +890,7 @@ function convCard(c) {
   card.querySelector('.conv-delete-btn').addEventListener('click', async e => {
     e.stopPropagation();
     const label = c.tag || c.id;
-    if (!confirm(`Delete conversation "${label}"?\nIf it's still running, it will be cancelled first. The transcript file is removed and cannot be recovered.`)) return;
+    if (!confirm(t('conv.delete_confirm', {label}))) return;
     try {
       await api(`/api/rooms/${state.currentRoomID}/conversations/${c.id}`, {method: 'DELETE'});
       if (state.selectedConvID === c.id) {
@@ -578,7 +900,7 @@ function convCard(c) {
       }
       await reloadConversations();
     } catch (err) {
-      alert('Delete failed: ' + err.message);
+      alert(t('conv.delete_failed', {err: err.message}));
     }
   });
   if (state.selectedConvID === c.id) {
@@ -595,15 +917,21 @@ async function selectConversation(convID) {
   renderTimeline();
 }
 
+// statusLabel localises a Conversation.Status. Falls back to the raw
+// English string if a translation is missing — that's still readable.
+function statusLabel(status) {
+  return t('status_label.' + status, {}, status);
+}
+
 function renderTimeline() {
   const c = state.selectedConv;
   if (!c) return;
   document.getElementById('timeline-panel').classList.remove('hidden');
   document.getElementById('timeline-title').textContent = c.tag || c.id;
-  document.getElementById('timeline-rounds').textContent = `${c.round_count}/${c.max_rounds} rounds`;
+  document.getElementById('timeline-rounds').textContent = t('conv.rounds_long', {r: c.round_count, m: c.max_rounds});
 
   const sEl = document.getElementById('timeline-status');
-  sEl.textContent = c.status;
+  sEl.textContent = statusLabel(c.status);
   sEl.className = 'text-xs px-2 py-0.5 rounded font-medium ' + ({
     planned: 'bg-slate-100 text-slate-700',
     active: 'bg-blue-100 text-blue-700',
@@ -616,8 +944,9 @@ function renderTimeline() {
   const cancelBtn = document.getElementById('timeline-cancel-btn');
   if (c.status === 'planned' || c.status === 'active') {
     cancelBtn.classList.remove('hidden');
+    cancelBtn.textContent = t('conv.cancel_btn');
     cancelBtn.onclick = async () => {
-      if (!confirm('Cancel this conversation?')) return;
+      if (!confirm(t('conv.cancel_confirm'))) return;
       await api(`/api/rooms/${state.currentRoomID}/conversations/${c.id}/cancel`, {
         method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({reason: 'user_cancel'}),
@@ -628,26 +957,25 @@ function renderTimeline() {
     cancelBtn.classList.add('hidden');
   }
 
+  // Outcome banner (terminal-state convs only). Sits between the
+  // header and the message body so the user sees done/failed +
+  // final answer + outputs without scrolling.
+  renderOutcomeBanner(c);
+
   const body = document.getElementById('timeline-body');
   body.innerHTML = '';
   for (const m of (c.messages || [])) {
     body.appendChild(timelineEntry(m));
   }
   if ((c.messages || []).length === 0) {
-    body.innerHTML = '<div class="text-slate-400 italic">no messages yet — waiting for first dispatch</div>';
+    body.innerHTML = `<div class="text-slate-400 italic">${escapeHtml(t('conv.no_messages'))}</div>`;
   }
-  // Footer: error / final answer
-  if (c.error) {
-    const errEl = document.createElement('div');
-    errEl.className = 'border-t border-slate-200 mt-2 pt-2 text-red-700';
-    errEl.textContent = '⚠ ' + c.error;
-    body.appendChild(errEl);
-  }
-  // Add a planned-state CTA so the user can actually start it.
+  // Add a planned-state CTA so the user can actually start it. Errors
+  // are now surfaced in the outcome banner above; no inline footer.
   if (c.status === 'planned') {
     const cta = document.createElement('div');
     cta.className = 'border-t border-slate-200 mt-2 pt-2';
-    cta.innerHTML = `<button id="start-this-btn" class="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1 rounded font-medium">▶ Start now</button>`;
+    cta.innerHTML = `<button id="start-this-btn" class="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1 rounded font-medium">${escapeHtml(t('conv.start_now'))}</button>`;
     body.appendChild(cta);
     document.getElementById('start-this-btn').onclick = async () => {
       await api(`/api/rooms/${state.currentRoomID}/conversations/${c.id}/start`, {method:'POST'});
@@ -655,6 +983,119 @@ function renderTimeline() {
   }
   // Auto-scroll to bottom on update.
   body.scrollTop = body.scrollHeight;
+}
+
+// renderOutcomeBanner paints the prominent done/failed/cancelled
+// summary above the timeline body. Hidden for planned + active convs
+// so the kanban + typing indicator carry the in-flight UX.
+function renderOutcomeBanner(c) {
+  const el = document.getElementById('timeline-outcome');
+  const terminal = ['done', 'failed', 'cancelled', 'interrupted'].includes(c.status);
+  if (!terminal) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    return;
+  }
+  const palette = {
+    done:        { wrap: 'bg-emerald-50',      head: 'text-emerald-800',     key: 'outcome.done' },
+    failed:      { wrap: 'bg-red-50',          head: 'text-red-800',         key: 'outcome.failed' },
+    cancelled:   { wrap: 'bg-orange-50',       head: 'text-orange-800',      key: 'outcome.cancelled' },
+    interrupted: { wrap: 'bg-amber-50',        head: 'text-amber-800',       key: 'outcome.interrupted' },
+  }[c.status];
+
+  // Duration: prefer FinishedAt - StartedAt; fall back to "—" when
+  // either timestamp is missing (older convs from before persistence).
+  let durStr = '';
+  if (c.started_at && c.finished_at) {
+    const ms = new Date(c.finished_at).getTime() - new Date(c.started_at).getTime();
+    if (ms >= 0) durStr = t('outcome.duration', {rounds: c.round_count, seconds: (ms / 1000).toFixed(1)});
+  }
+
+  // Final answer / error body. For done convs, lift the primary text
+  // out of FinalAnswer; for failed convs, surface c.error (which the
+  // daemon also writes for cancelled/interrupted).
+  let bodyHtml = '';
+  if (c.status === 'done' && c.final_answer != null) {
+    const ext = extractPrimaryText(c.final_answer);
+    const text = ext.primary || ext.raw;
+    if (text) {
+      const rendered = looksLikeMarkdown(text)
+        ? `<div class="payload mt-1 leading-relaxed">${renderMarkdownLite(text)}</div>`
+        : `<pre class="payload mt-1 whitespace-pre-wrap break-words">${escapeHtml(text)}</pre>`;
+      bodyHtml = `
+        <div class="mt-3">
+          <div class="text-[11px] font-semibold text-slate-700 uppercase tracking-wide">${escapeHtml(t('outcome.final_answer'))}</div>
+          <div class="bg-white border border-slate-200 rounded p-3 text-[13px] text-slate-800 mt-1 max-h-[200px] overflow-y-auto scrollbar">${rendered}</div>
+          <button class="outcome-copy-btn mt-1.5 text-xs text-blue-600 hover:underline">${escapeHtml(t('outcome.copy'))}</button>
+        </div>`;
+    }
+  } else if (c.error) {
+    bodyHtml = `
+      <div class="mt-3">
+        <div class="text-[11px] font-semibold text-slate-700 uppercase tracking-wide">${escapeHtml(t('outcome.error_label'))}</div>
+        <div class="bg-white border border-red-200 rounded p-3 text-[13px] text-red-700 font-mono whitespace-pre-wrap mt-1">${escapeHtml(c.error)}</div>
+      </div>`;
+  }
+
+  // Outputs list. Empty for convs created before the Outputs field
+  // existed, OR when no agent wrote files. Show an explicit "no
+  // outputs" line so the user knows we looked.
+  const outputs = c.outputs || [];
+  let outputsHtml = '';
+  if (outputs.length > 0) {
+    const rows = outputs.map((o, i) => {
+      const sizeStr = formatBytes(o.size || 0);
+      return `<button class="outcome-output-row w-full text-left flex items-center gap-2 px-2 py-1 rounded hover:bg-slate-50 text-[12px] text-slate-700" data-vol="${escapeHtml(o.volume)}" data-path="${escapeHtml(o.path)}">
+        <span>📁</span>
+        <span class="font-mono"><b>${escapeHtml(o.volume)}</b>/${escapeHtml(o.path)}</span>
+        <span class="ml-auto text-slate-400">${sizeStr}</span>
+      </button>`;
+    }).join('');
+    outputsHtml = `
+      <div class="mt-3">
+        <div class="text-[11px] font-semibold text-slate-700 uppercase tracking-wide">${escapeHtml(t('outcome.outputs_title'))}</div>
+        <div class="bg-white border border-slate-200 rounded mt-1">${rows}</div>
+        <p class="text-[10px] text-slate-500 mt-1">${escapeHtml(t('outcome.outputs_hint'))}</p>
+      </div>`;
+  } else if (c.status === 'done') {
+    outputsHtml = `<p class="text-[11px] text-slate-500 mt-3 italic">${escapeHtml(t('outcome.no_outputs'))}</p>`;
+  }
+
+  el.innerHTML = `
+    <div class="${palette.wrap} px-4 py-3">
+      <div class="flex items-baseline gap-2">
+        <div class="text-base font-semibold ${palette.head}">${escapeHtml(t(palette.key))}</div>
+        ${durStr ? `<div class="text-xs text-slate-500">${escapeHtml(durStr)}</div>` : ''}
+      </div>
+      ${bodyHtml}
+      ${outputsHtml}
+    </div>
+  `;
+  el.classList.remove('hidden');
+
+  // Wire copy + output click handlers.
+  const copyBtn = el.querySelector('.outcome-copy-btn');
+  if (copyBtn && c.final_answer != null) {
+    copyBtn.onclick = async () => {
+      const ext = extractPrimaryText(c.final_answer);
+      const text = ext.primary || ext.raw || '';
+      try {
+        await navigator.clipboard.writeText(text);
+        copyBtn.textContent = t('outcome.copied');
+        setTimeout(() => { copyBtn.textContent = t('outcome.copy'); }, 1500);
+      } catch {}
+    };
+  }
+  el.querySelectorAll('.outcome-output-row').forEach(row => {
+    row.onclick = () => {
+      const vol = row.dataset.vol;
+      const path = row.dataset.path;
+      // Switch to Volumes tab + open the file.
+      const tab = document.querySelector('.tab-btn[data-tab="volumes"]');
+      if (tab) tab.click();
+      selectVolume(vol).then(() => loadVolumeFile(path));
+    };
+  });
 }
 
 // Build a name→roomID map from the selected conv's Members. Returns
@@ -680,6 +1121,114 @@ function shortRoomLabel(roomID) {
   return (r && r.name) || roomID;
 }
 
+// extractPrimaryText pulls the human-readable "main content" out of a
+// message payload. Agents over time have settled on a handful of field
+// names — we look for them in priority order. If a string field looks
+// like JSON itself we recurse one level (covers the common
+// {"answer":"{\\"answer\\": ...}"} double-wrapping pattern).
+//
+// Returns {primary, raw}. `primary` may be empty if nothing extractable
+// — in which case the renderer just shows the raw block.
+const PAYLOAD_TEXT_KEYS = ['text', 'answer', 'output', 'content', 'message', 'body', 'final_answer', 'result'];
+function extractPrimaryText(payload) {
+  if (payload == null) return { primary: '', raw: '' };
+  let raw = '';
+  let value = payload;
+  if (typeof payload === 'string') {
+    raw = payload;
+    const trimmed = payload.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try { value = JSON.parse(payload); } catch {}
+    }
+  } else {
+    try { raw = JSON.stringify(payload, null, 2); } catch { raw = String(payload); }
+  }
+  if (typeof value === 'string') return { primary: value, raw };
+  if (typeof value !== 'object' || value === null) return { primary: String(value), raw };
+  // Try priority keys at the top level + one level of common wrappers.
+  const candidates = [value];
+  if (typeof value.output === 'object' && value.output !== null) candidates.push(value.output);
+  if (typeof value.payload === 'object' && value.payload !== null) candidates.push(value.payload);
+  for (const obj of candidates) {
+    for (const k of PAYLOAD_TEXT_KEYS) {
+      const v = obj[k];
+      if (typeof v !== 'string' || v === '') continue;
+      const t = v.trim();
+      if (t.startsWith('{') || t.startsWith('[')) {
+        // Wrapped JSON — recurse to peel one layer.
+        try {
+          const inner = JSON.parse(v);
+          const sub = extractPrimaryText(inner);
+          if (sub.primary) return { primary: sub.primary, raw };
+        } catch {}
+      }
+      return { primary: v, raw };
+    }
+  }
+  // Fallback: first string field anywhere shallow, just so the user
+  // gets *something* readable.
+  for (const k of Object.keys(value)) {
+    if (typeof value[k] === 'string' && value[k].length > 0) {
+      return { primary: value[k], raw };
+    }
+  }
+  return { primary: '', raw };
+}
+
+// looksLikeMarkdown returns true for content with headings or bullets
+// at line-start. Conservative on purpose so plain-text strings that
+// happen to contain # or - aren't mangled.
+function looksLikeMarkdown(s) {
+  if (!s || s.length < 4) return false;
+  return /(^|\n)#{1,6} \S/.test(s) || /(^|\n)[-*] \S/.test(s);
+}
+
+// renderMarkdownLite turns a small subset of markdown into safe HTML —
+// headings (# .. ###), unordered lists (- / *), and double-newline
+// paragraphs. Anything fancier (tables, inline links, code fences) is
+// left as plain text on purpose: keeping this regex-based avoids
+// pulling in a markdown library and the extra ~30 KB of weight.
+function renderMarkdownLite(s) {
+  const lines = s.split('\n');
+  let html = '';
+  let inList = false;
+  for (const raw of lines) {
+    const line = raw;
+    let m = line.match(/^(#{1,6})\s+(.*)$/);
+    if (m) {
+      if (inList) { html += '</ul>'; inList = false; }
+      const lvl = Math.min(6, m[1].length);
+      html += `<h${lvl} class="font-semibold mt-2 mb-1">${escapeHtml(m[2])}</h${lvl}>`;
+      continue;
+    }
+    m = line.match(/^[-*]\s+(.*)$/);
+    if (m) {
+      if (!inList) { html += '<ul class="list-disc ml-5">'; inList = true; }
+      html += `<li>${escapeHtml(m[1])}</li>`;
+      continue;
+    }
+    if (inList) { html += '</ul>'; inList = false; }
+    if (line.trim() === '') {
+      html += '<br>';
+    } else {
+      html += `<div>${escapeHtml(line)}</div>`;
+    }
+  }
+  if (inList) html += '</ul>';
+  return html;
+}
+
+// kindMeta maps a Message.Kind to its badge classes + display label +
+// emoji. Centralised here so the timeline + the outcome banner agree.
+const KIND_META = {
+  task_input:  { cls: 'bg-slate-100 text-slate-700',  emoji: '📥', label: 'Input' },
+  peer:        { cls: 'bg-blue-50 text-blue-700',     emoji: '💬', label: 'Message' },
+  task_output: { cls: 'bg-emerald-50 text-emerald-700', emoji: '📤', label: 'Output' },
+  error:       { cls: 'bg-red-50 text-red-700',       emoji: '❌', label: 'Error' },
+  log:         { cls: 'bg-slate-50 text-slate-500',   emoji: '📝', label: 'Log' },
+  round_cap:   { cls: 'bg-orange-50 text-orange-700', emoji: '🛑', label: 'Round cap' },
+};
+
 function timelineEntry(m) {
   const el = document.createElement('div');
   const fromColor = colorFor(m.from);
@@ -688,23 +1237,28 @@ function timelineEntry(m) {
   const xMap = xroomMemberMap();
   const fromRoom = xMap && m.from ? xMap[m.from] : null;
   const toRoom = xMap && m.to ? xMap[m.to] : null;
-  const kindBadge = ({
-    task_input:  'bg-slate-100 text-slate-700',
-    peer:        'bg-blue-50 text-blue-700',
-    task_output: 'bg-emerald-50 text-emerald-700',
-    error:       'bg-red-50 text-red-700',
-    log:         'bg-slate-50 text-slate-500',
-    round_cap:   'bg-orange-50 text-orange-700',
-  })[m.kind] || 'bg-slate-50 text-slate-700';
+  const meta = KIND_META[m.kind] || { cls: 'bg-slate-50 text-slate-700', emoji: '·', label: m.kind };
 
-  let payloadStr = '';
-  if (m.payload != null) {
-    try {
-      const obj = (typeof m.payload === 'string') ? JSON.parse(m.payload) : m.payload;
-      payloadStr = JSON.stringify(obj, null, 2);
-    } catch {
-      payloadStr = String(m.payload);
+  const { primary, raw } = extractPrimaryText(m.payload);
+  // Render primary content. For markdown-shaped strings use the lite
+  // renderer; otherwise treat as preformatted text so newlines + leading
+  // spaces survive (important for code-like answers).
+  let primaryHtml = '';
+  if (primary) {
+    if (looksLikeMarkdown(primary)) {
+      primaryHtml = `<div class="payload mt-1 text-[12px] text-slate-800 bg-slate-50/60 rounded p-2 border border-slate-100 leading-relaxed">${renderMarkdownLite(primary)}</div>`;
+    } else {
+      primaryHtml = `<pre class="payload mt-1 text-[12px] text-slate-800 bg-slate-50/60 rounded p-2 border border-slate-100">${escapeHtml(primary)}</pre>`;
     }
+  }
+  // Raw JSON — collapsed by default. Only show the disclosure when raw
+  // differs meaningfully from primary (avoids dead-weight toggle for
+  // plain strings).
+  let rawHtml = '';
+  if (raw && raw !== primary) {
+    rawHtml = `<details class="mt-1 text-[10px] text-slate-500"><summary class="cursor-pointer hover:text-slate-700">[+] details (raw)</summary><pre class="payload mt-1 text-[10px] text-slate-600 bg-slate-50 rounded p-1.5 border border-slate-100">${escapeHtml(raw)}</pre></details>`;
+  } else if (raw && !primary) {
+    rawHtml = `<pre class="payload mt-1 text-[10px] text-slate-600 bg-slate-50 rounded p-1.5 border border-slate-100">${escapeHtml(raw)}</pre>`;
   }
 
   const fromLabel = fromRoom
@@ -724,9 +1278,10 @@ function timelineEntry(m) {
       <div class="flex items-center gap-2 text-[11px]">
         <span class="font-bold" style="color:${fromColor}">${fromLabel}</span>
         ${toLabel ? `<span class="text-slate-400">${toLabel}</span>` : ''}
-        <span class="px-1.5 py-0.5 rounded text-[10px] ${kindBadge}">${m.kind}</span>
+        <span class="px-1.5 py-0.5 rounded text-[10px] ${meta.cls}" title="${escapeHtml(m.kind)}">${meta.emoji} ${escapeHtml(t('kind.' + m.kind, {}, meta.label))}</span>
       </div>
-      ${payloadStr ? `<pre class="payload mt-0.5 text-[11px] text-slate-700 bg-slate-50/60 rounded p-1.5 border border-slate-100">${escapeHtml(payloadStr)}</pre>` : ''}
+      ${primaryHtml}
+      ${rawHtml}
     </div>
   `;
   return el;
@@ -788,13 +1343,13 @@ function populateVolumePicker() {
   sel.innerHTML = '';
   const noneOpt = document.createElement('option');
   noneOpt.value = '__none__';
-  noneOpt.textContent = '(none — skip uploads)';
+  noneOpt.textContent = t('modal.vol_none');
   sel.appendChild(noneOpt);
   const roomVols = (state.currentRoom && state.currentRoom.volume_names) || [];
   for (const name of roomVols) {
     const o = document.createElement('option');
     o.value = name;
-    o.textContent = name + '  (mounted)';
+    o.textContent = t('modal.vol_mounted', {name});
     sel.appendChild(o);
   }
   // Volumes that exist daemon-wide but aren't mounted into this Room —
@@ -803,12 +1358,12 @@ function populateVolumePicker() {
     if (roomVols.includes(v.name)) continue;
     const o = document.createElement('option');
     o.value = v.name;
-    o.textContent = v.name + '  (not mounted)';
+    o.textContent = t('modal.vol_not_mounted', {name: v.name});
     sel.appendChild(o);
   }
   const createOpt = document.createElement('option');
   createOpt.value = '__create__';
-  createOpt.textContent = '+ create new volume…';
+  createOpt.textContent = t('modal.vol_create_opt');
   sel.appendChild(createOpt);
   sel.value = '__none__';
 }
@@ -834,7 +1389,7 @@ document.getElementById('nc-vol').addEventListener('change', e => {
 // re-renders the picker with the new name selected.
 document.getElementById('nc-vol-create-btn').onclick = async () => {
   const name = document.getElementById('nc-vol-create-name').value.trim();
-  if (!name) { alert('volume name is required'); return; }
+  if (!name) { alert(t('modal.create_volume_required')); return; }
   try {
     await api('/api/volumes', {
       method: 'POST', headers: {'Content-Type':'application/json'},
@@ -846,7 +1401,7 @@ document.getElementById('nc-vol-create-btn').onclick = async () => {
     document.getElementById('nc-vol').dispatchEvent(new Event('change'));
     if (state.currentRoomID) renderVolumeList();
   } catch (e) {
-    alert('Create volume failed: ' + e.message);
+    alert(t('modal.create_volume_failed', {err: e.message}));
   }
 };
 document.getElementById('nc-vol-create-cancel').onclick = () => {
@@ -874,7 +1429,7 @@ document.getElementById('nc-url-add').onclick = () => {
     const last = u.pathname.split('/').filter(Boolean).pop();
     if (last) name = last;
   } catch (e) {
-    alert('invalid URL: ' + e.message); return;
+    alert(t('modal.invalid_url', {err: e.message})); return;
   }
   state.pendingUploads.push({kind: 'url', url, name});
   inp.value = '';
@@ -905,7 +1460,7 @@ async function flushPendingUploads(volume) {
   const status = document.getElementById('nc-status');
   for (let i = 0; i < state.pendingUploads.length; i++) {
     const u = state.pendingUploads[i];
-    status.textContent = `Uploading ${i + 1}/${state.pendingUploads.length} — ${u.name}…`;
+    status.textContent = t('modal.uploads_progress', {i: i + 1, n: state.pendingUploads.length, name: u.name});
     if (u.kind === 'file') {
       const fd = new FormData();
       fd.append('file', u.file, u.name);
@@ -936,7 +1491,7 @@ function populateXroomRoomSelect() {
   if (others.length === 0) {
     const opt = document.createElement('option');
     opt.value = '';
-    opt.textContent = '(no other rooms)';
+    opt.textContent = t('modal.xroom_no_others');
     sel.appendChild(opt);
     sel.disabled = true;
     document.getElementById('nc-xroom-agent').innerHTML = '';
@@ -964,7 +1519,7 @@ document.getElementById('nc-xroom-room').addEventListener('change', e => {
 async function loadXroomAgentsFor(roomID) {
   if (!roomID) return;
   const sel = document.getElementById('nc-xroom-agent');
-  sel.innerHTML = '<option>(loading…)</option>';
+  sel.innerHTML = `<option>${escapeHtml(t('modal.xroom_loading'))}</option>`;
   let detail = state.roomDetailCache[roomID];
   if (!detail) {
     try {
@@ -974,7 +1529,7 @@ async function loadXroomAgentsFor(roomID) {
       sel.innerHTML = '';
       const opt = document.createElement('option');
       opt.value = '';
-      opt.textContent = '(failed: ' + e.message + ')';
+      opt.textContent = t('modal.xroom_failed', {err: e.message});
       sel.appendChild(opt);
       return;
     }
@@ -1041,7 +1596,7 @@ document.getElementById('nc-submit').onclick = async () => {
   let inputObj = null;
   if (inputRaw) {
     try { inputObj = JSON.parse(inputRaw); }
-    catch (e) { alert('Input is not valid JSON: ' + e.message); return; }
+    catch (e) { alert(t('modal.invalid_input_json', {err: e.message})); return; }
   }
   // Cross-Room: assemble members[] from the implicit initial target plus
   // every chip the user added. The daemon validates that members must
@@ -1060,14 +1615,14 @@ document.getElementById('nc-submit').onclick = async () => {
   const volumeChoice = document.getElementById('nc-vol').value;
   if (state.pendingUploads.length > 0) {
     if (volumeChoice === '__none__' || volumeChoice === '__create__') {
-      alert('Pick a target Volume for the staged files (or remove them).');
+      alert(t('modal.upload_pick_volume'));
       return;
     }
     try {
       await flushPendingUploads(volumeChoice);
     } catch (e) {
       document.getElementById('nc-status').textContent = '';
-      alert('Upload failed: ' + e.message);
+      alert(t('modal.uploads_failed', {err: e.message}));
       return;
     }
   }
@@ -1083,7 +1638,7 @@ document.getElementById('nc-submit').onclick = async () => {
     await reloadConversations();
     selectConversation(res.conv_id);
   } catch (e) {
-    alert('Create failed: ' + e.message);
+    alert(t('modal.create_failed', {err: e.message}));
   }
 };
 
@@ -1092,15 +1647,15 @@ function subscribeSSE(roomID) {
   if (state.sse) state.sse.close();
   const sse = new EventSource(`/api/rooms/${roomID}/events`);
   state.sse = sse;
-  setStatus('connecting…');
-  sse.addEventListener('hello', e => setStatus('live'));
+  setStatus(t('status.connecting'));
+  sse.addEventListener('hello', e => setStatus(t('status.live')));
   sse.addEventListener('conversation.created', onConvEvent);
   sse.addEventListener('conversation.started', onConvEvent);
   sse.addEventListener('conversation.message', onConvEvent);
   sse.addEventListener('conversation.status', onConvEvent);
   sse.addEventListener('conversation.finished', onConvEvent);
   sse.addEventListener('conversation.deleted', onConvEvent);
-  sse.onerror = () => setStatus('disconnected — reconnecting', true);
+  sse.onerror = () => setStatus(t('status.disconnected'), true);
 }
 
 async function onConvEvent(e) {
@@ -1113,7 +1668,7 @@ async function onConvEvent(e) {
       state.selectedConv = await api(`/api/rooms/${state.currentRoomID}/conversations/${state.selectedConvID}`);
       renderTimeline();
     }
-    setStatus('live · ' + ev.type.replace('conversation.', ''));
+    setStatus(t('status.live_ev', {ev: ev.type.replace('conversation.', '')}));
   } catch {}
 }
 
@@ -1137,13 +1692,13 @@ function renderVolumeList() {
   if (canFilter && state.volumesScope === 'room') {
     const allow = new Set(roomVolNames);
     display = state.volumes.filter(v => allow.has(v.name));
-    labelEl.textContent = `· mounted in ${room.name}`;
-    toggleEl.textContent = 'Show all';
+    labelEl.textContent = t('vol.scope.room', {room: room.name});
+    toggleEl.textContent = t('vol.show_all');
     toggleEl.classList.remove('hidden');
     toggleEl.onclick = () => { state.volumesScope = 'all'; renderVolumeList(); };
   } else if (canFilter) {
-    labelEl.textContent = `· all volumes`;
-    toggleEl.textContent = `Filter to ${room.name}`;
+    labelEl.textContent = t('vol.scope.all');
+    toggleEl.textContent = t('vol.filter_to', {room: room.name});
     toggleEl.classList.remove('hidden');
     toggleEl.onclick = () => { state.volumesScope = 'room'; renderVolumeList(); };
   } else {
@@ -1153,9 +1708,9 @@ function renderVolumeList() {
 
   if (display.length === 0) {
     if (canFilter && state.volumesScope === 'room') {
-      el.innerHTML = `<div class="text-xs text-slate-400 italic px-1 py-2">no volumes mounted in this Room.<br>Hire an Agent with <code class="font-mono">--volume</code>, or click "Show all" to see global volumes.</div>`;
+      el.innerHTML = `<div class="text-xs text-slate-400 italic px-1 py-2">${t('vol.empty.room')}</div>`;
     } else {
-      el.innerHTML = '<div class="text-xs text-slate-400 italic px-1 py-2">no volumes</div>';
+      el.innerHTML = `<div class="text-xs text-slate-400 italic px-1 py-2">${escapeHtml(t('vol.empty.global'))}</div>`;
     }
     return;
   }
@@ -1172,7 +1727,7 @@ async function selectVolume(name) {
   state.selectedVolume = name;
   // Replace volume-list with the tree of this volume but keep a back nav.
   const el = document.getElementById('volume-list');
-  el.innerHTML = '<div class="cursor-pointer text-xs text-blue-600 px-1 py-1" id="vol-back">← back to volumes</div>';
+  el.innerHTML = `<div class="cursor-pointer text-xs text-blue-600 px-1 py-1" id="vol-back">${escapeHtml(t('vol.back'))}</div>`;
   document.getElementById('vol-back').onclick = renderVolumeList;
   try {
     const tree = await api(`/api/volumes/${name}/tree`);
@@ -1284,10 +1839,11 @@ function teamRow(m, depth) {
   // parens when distinct so an alias is visually obvious.
   const name = m.name || m.image;
   const aliasNote = (m.name && m.name !== m.image) ? ` <span class="text-[10px] text-slate-400 ml-1">(${escapeHtml(m.image)})</span>` : '';
+  const hiredBy = m.parent ? ` <span class="text-[10px] text-slate-400 ml-1">(${escapeHtml(t('team.hired_by', {parent: m.parent}))})</span>` : '';
   tr.innerHTML = `
-    <td class="px-3 py-2">${indent}<b style="color:${colorFor(name)}">${escapeHtml(name)}</b>${aliasNote}${m.parent ? ` <span class="text-[10px] text-slate-400 ml-1">(hired by ${escapeHtml(m.parent)})</span>` : ''}</td>
+    <td class="px-3 py-2">${indent}<b style="color:${colorFor(name)}">${escapeHtml(name)}</b>${aliasNote}${hiredBy}</td>
     <td class="px-3 py-2 text-xs">${escapeHtml(m.rank)}</td>
-    <td class="px-3 py-2 text-xs font-mono">${escapeHtml(m.model || '(default)')}</td>
+    <td class="px-3 py-2 text-xs font-mono">${escapeHtml(m.model || t('team.default_model'))}</td>
     <td class="px-3 py-2 text-xs">${escapeHtml(vols)}</td>
     <td class="px-3 py-2 text-xs text-slate-500">${escapeHtml(quotaStr)}</td>
   `;
@@ -1323,6 +1879,17 @@ function formatBytes(n) {
 }
 
 // ── Boot ──────────────────────────────────────────────────────────
+//
+// Apply the chosen locale to every static [data-i18n*] node before the
+// first paint, then mark the active language toggle so it visually
+// reflects state.lang from the get-go.
+applyI18n();
+document.querySelectorAll('[data-lang-btn]').forEach(b => {
+  const sel = b.dataset.langBtn === LANG;
+  b.classList.toggle('bg-blue-600', sel);
+  b.classList.toggle('text-white', sel);
+  b.classList.toggle('text-slate-500', !sel);
+});
 bootstrap();
 // Periodic room-list refresh to pick up newly-hired rooms (low-cost
 // since the page is tiny). 2s feels near-instant when waiting for a
