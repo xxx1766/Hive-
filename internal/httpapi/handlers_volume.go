@@ -93,7 +93,16 @@ func (s *Server) handleVolumeScoped(w http.ResponseWriter, r *http.Request) {
 	case "tree":
 		s.serveVolumeTree(w, r, name)
 	case "file":
-		s.serveVolumeFile(w, r, name)
+		// GET reads (text inline up to 1 MB, OR raw bytes when ?download=1).
+		// PUT overwrites the file (atomic, capped at upload-max).
+		switch r.Method {
+		case http.MethodGet:
+			s.serveVolumeFile(w, r, name)
+		case http.MethodPut:
+			s.serveVolumeFilePut(w, r, name)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
 	case "files":
 		s.uploadVolumeFile(w, r, name)
 	case "fetch":
@@ -141,34 +150,14 @@ func (s *Server) serveVolumeTree(w http.ResponseWriter, r *http.Request, name st
 }
 
 func (s *Server) serveVolumeFile(w http.ResponseWriter, r *http.Request, name string) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	rel := r.URL.Query().Get("p")
 	if rel == "" {
 		http.Error(w, "?p= is required", http.StatusBadRequest)
 		return
 	}
-	vol, err := s.volumes.Get(name)
+	abs, info, err := resolveVolumeFile(s, name, rel)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	// Path-traversal defence: reject any rel that escapes the volume root.
-	clean := filepath.Clean(rel)
-	if strings.HasPrefix(clean, "..") || strings.Contains(clean, string(os.PathSeparator)+"..") {
-		http.Error(w, "invalid path", http.StatusBadRequest)
-		return
-	}
-	abs := filepath.Join(vol.Path, clean)
-	if !strings.HasPrefix(abs, vol.Path+string(os.PathSeparator)) && abs != vol.Path {
-		http.Error(w, "invalid path", http.StatusBadRequest)
-		return
-	}
-	info, err := os.Stat(abs)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		http.Error(w, err.Error(), errStatus(err))
 		return
 	}
 	if info.IsDir() {
@@ -182,19 +171,90 @@ func (s *Server) serveVolumeFile(w http.ResponseWriter, r *http.Request, name st
 	}
 	defer f.Close()
 
+	// Download mode: serve raw bytes with Content-Disposition so the
+	// browser saves the file under its original name. Range requests
+	// are handled by http.ServeContent so big downloads can resume.
+	if isTruthy(r.URL.Query().Get("download")) {
+		base := filepath.Base(abs)
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+base+`"`)
+		w.Header().Set("X-File-Size", itoa(info.Size()))
+		http.ServeContent(w, r, base, info.ModTime(), f)
+		return
+	}
+
+	// Inline text view (default). Up to 1 MB; truncate with a marker
+	// past that — the SPA viewer shows the marker so the user knows
+	// to download for the rest.
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-File-Size", itoa(info.Size()))
 	if info.Size() > volumeFileSizeCap {
 		w.Header().Set("X-Truncated", "true")
-		// Read up to cap, append a marker so it's obvious the rest was clipped.
 		buf := make([]byte, volumeFileSizeCap)
 		n, _ := f.Read(buf)
 		_, _ = w.Write(buf[:n])
 		_, _ = w.Write([]byte("\n--- [truncated; file is larger than 1MB] ---"))
 		return
 	}
-	// Fits in cap — copy.
 	_, _ = copyFile(w, f)
+}
+
+// resolveVolumeFile is the shared path-resolution + traversal-guard
+// step used by both GET and PUT. Returns the absolute path and Stat
+// (may be nil if the file doesn't exist yet — only an issue for GET;
+// PUT creates the file).
+func resolveVolumeFile(s *Server, name, rel string) (string, os.FileInfo, error) {
+	vol, err := s.volumes.Get(name)
+	if err != nil {
+		return "", nil, err
+	}
+	clean := filepath.Clean(rel)
+	if strings.HasPrefix(clean, "..") || strings.Contains(clean, string(os.PathSeparator)+"..") {
+		return "", nil, errInvalidPath
+	}
+	abs := filepath.Join(vol.Path, clean)
+	if !strings.HasPrefix(abs, vol.Path+string(os.PathSeparator)) && abs != vol.Path {
+		return "", nil, errInvalidPath
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return abs, nil, err
+	}
+	return abs, info, nil
+}
+
+// errInvalidPath is the sentinel resolveVolumeFile returns when ?p=
+// resolves outside the volume root. We map it to 400 in errStatus.
+var errInvalidPath = newPathError("invalid path")
+
+func newPathError(msg string) error { return &pathError{msg: msg} }
+
+type pathError struct{ msg string }
+
+func (e *pathError) Error() string { return e.msg }
+
+func errStatus(err error) int {
+	if _, ok := err.(*pathError); ok {
+		return http.StatusBadRequest
+	}
+	if os.IsNotExist(err) {
+		return http.StatusNotFound
+	}
+	return http.StatusInternalServerError
+}
+
+// isTruthy is a small helper for query-flag toggles. Treats "1",
+// "true", "yes" (case-insensitive) and any other non-empty value as
+// truthy. Empty / missing → false.
+func isTruthy(v string) bool {
+	if v == "" {
+		return false
+	}
+	switch strings.ToLower(v) {
+	case "0", "false", "no":
+		return false
+	}
+	return true
 }
 
 // buildFileTree walks dir and returns the rooted tree. Hidden files

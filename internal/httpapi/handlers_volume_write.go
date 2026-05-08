@@ -169,6 +169,53 @@ func (s *Server) fetchVolumeFile(w http.ResponseWriter, r *http.Request, name st
 	})
 }
 
+// serveVolumeFilePut handles PUT /api/volumes/{name}/file?p=<rel>.
+// Body bytes overwrite the file at the resolved path. Atomic via temp
+// + rename, capped at the upload-max env, parents created lazily.
+//
+// Used by the SPA's in-browser editor — Save sends the textarea
+// content back here. Path-traversal guarded the same way as the GET.
+func (s *Server) serveVolumeFilePut(w http.ResponseWriter, r *http.Request, name string) {
+	rel := r.URL.Query().Get("p")
+	if rel == "" {
+		http.Error(w, "?p= is required", http.StatusBadRequest)
+		return
+	}
+	vol, err := s.volumes.Get(name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	// Inline path-traversal guard (mirrors resolveVolumeFile, but we
+	// don't require the file to already exist — Save can create new).
+	clean := filepath.Clean(rel)
+	if strings.HasPrefix(clean, "..") || strings.Contains(clean, string(os.PathSeparator)+"..") {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	abs := filepath.Join(vol.Path, clean)
+	if !strings.HasPrefix(abs, vol.Path+string(os.PathSeparator)) {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(abs), 0o750); err != nil {
+		http.Error(w, "mkdir parent: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	maxBytes := uploadCap()
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+(1<<20))
+	written, err := writeWithCap(abs, r.Body, maxBytes)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"volume": vol.Name,
+		"path":   filepath.ToSlash(clean),
+		"size":   written,
+	})
+}
+
 // safeUploadPath joins volRoot/uploads/<basename(filename)> with strict
 // validation: no path separators, no dotfiles, no `..`, must resolve
 // inside volRoot/uploads/.

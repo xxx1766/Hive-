@@ -27,6 +27,8 @@
 //	DELETE /api/volumes/{name}                     remove the volume and everything in it
 //	GET    /api/volumes/{name}/tree                file tree under a volume
 //	GET    /api/volumes/{name}/file?p=<rel>        file contents (text only, 1MB cap)
+//	GET    /api/volumes/{name}/file?p=<rel>&download=1   raw bytes + Content-Disposition (no cap, range-supported)
+//	PUT    /api/volumes/{name}/file?p=<rel>        overwrite/create file with body bytes (atomic; capped at upload-max)
 //	POST   /api/volumes/{name}/files               multipart upload to <vol>/uploads/<file>
 //	POST   /api/volumes/{name}/fetch               server-side URL → <vol>/uploads/<file>
 //	GET    /                                       embedded SPA (UI)
