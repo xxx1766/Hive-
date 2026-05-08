@@ -4,12 +4,10 @@
 room: md-doc-single
 entry: md-to-doc
 agents:
-  - image: md-to-doc:0.1.0
+  # md-to-doc:0.2.0 is a kind:binary agent (real .docx writer) — no
+  # LLM quota needed. doc-to-md:0.1.0 stays a skill (LLM rewrite).
+  - image: md-to-doc:0.2.0
     rank: staff
-    model: openai/gpt-5.4-mini
-    quota:
-      tokens:
-        "openai/gpt-5.4-mini": 16000
   - image: doc-to-md:0.1.0
     rank: staff
     model: openai/gpt-5.4-mini

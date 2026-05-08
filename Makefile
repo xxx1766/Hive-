@@ -22,14 +22,15 @@ $(BIN_DIR)/hive-workflow-runner: $(shell find . -name '*.go' -not -path './examp
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -ldflags "$(LDFLAGS)" -o $@ ./cmd/hive-workflow-runner
 
-EXAMPLES := echo fetch upper summarize brief url-summary research memo blob coder
+EXAMPLES := echo fetch upper summarize brief url-summary research memo blob coder md-doc-converter/md-to-doc
 
 examples:
 	@for agent in $(EXAMPLES); do \
 		if [ -f ./examples/$$agent/main.go ]; then \
+			name=$$(basename $$agent); \
 			mkdir -p ./examples/$$agent/bin; \
 			echo "  build example $$agent"; \
-			$(GO) build -o ./examples/$$agent/bin/$$agent ./examples/$$agent || exit 1; \
+			$(GO) build -o ./examples/$$agent/bin/$$name ./examples/$$agent || exit 1; \
 		fi; \
 	done
 
