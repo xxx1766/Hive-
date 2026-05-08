@@ -296,6 +296,51 @@ func (d *Daemon) handleConversationCancel(ctx context.Context, params json.RawMe
 	return ipc.ConversationCancelResult{ConvID: p.ConvID, Status: string(updated.Status)}, nil
 }
 
+// handleConversationDelete removes a Conversation from disk. If it's
+// still active, we cancel it first (reason="deleted") so any in-flight
+// runner won't keep mutating a now-orphaned record. Idempotent against
+// "already gone" — a second delete returns ok with deleted=false.
+func (d *Daemon) handleConversationDelete(ctx context.Context, params json.RawMessage, _ ipc.NotifyFunc) (any, error) {
+	var p ipc.ConversationDeleteParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, protocol.NewError(protocol.ErrCodeInvalidParams, err.Error())
+	}
+	if p.RoomID == "" || p.ConvID == "" {
+		return nil, protocol.NewError(protocol.ErrCodeInvalidParams, "room_id and conv_id are required")
+	}
+	// Cross-check the index — if it knows a different owner, prefer that
+	// (caller may have stale state). If neither agrees the conv exists,
+	// the Load below will surface the error.
+	if owner := d.convIndex.Owner(p.ConvID); owner != "" && owner != p.RoomID {
+		p.RoomID = owner
+	}
+	c, err := d.convStore.Load(p.RoomID, p.ConvID)
+	if err != nil {
+		// Already gone — be idempotent.
+		d.convIndex.Forget(p.ConvID)
+		return ipc.ConversationDeleteResult{ConvID: p.ConvID, Deleted: false}, nil
+	}
+	// Cancel-if-active so the runner doesn't keep poking a deleted record.
+	if !c.Status.Terminal() {
+		body, _ := json.Marshal(ipc.ConversationCancelParams{
+			RoomID: p.RoomID, ConvID: p.ConvID, Reason: "deleted",
+		})
+		if _, cerr := d.handleConversationCancel(ctx, body, nil); cerr != nil {
+			log.Printf("conversation %s: pre-delete cancel failed: %v", p.ConvID, cerr)
+			// Keep going — orphaned active conv is worse than partial cleanup.
+		}
+	}
+	if err := d.convStore.Delete(p.RoomID, p.ConvID); err != nil {
+		return nil, protocol.NewError(protocol.ErrCodeInternal, err.Error())
+	}
+	d.convIndex.Forget(p.ConvID)
+	d.publishConvEvent(p.RoomID, p.ConvID, conversation.EventConvDeleted, map[string]string{
+		"conv_id": p.ConvID,
+		"room_id": p.RoomID,
+	})
+	return ipc.ConversationDeleteResult{ConvID: p.ConvID, Deleted: true}, nil
+}
+
 // publishConvEvent fans the event out to:
 //   - the per-Room conversation.Bus (UI subscribers via SSE)
 //   - the active room/run notifier (if any) — keeps existing CLI streams

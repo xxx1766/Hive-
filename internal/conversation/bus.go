@@ -15,6 +15,7 @@ const (
 	EventConvMessage   EventType = "conversation.message"
 	EventConvStatusUpd EventType = "conversation.status"
 	EventConvFinished  EventType = "conversation.finished"
+	EventConvDeleted   EventType = "conversation.deleted"
 )
 
 // Event is what subscribers receive. Payload is whatever the publisher

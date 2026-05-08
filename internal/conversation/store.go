@@ -281,6 +281,23 @@ func (s *Store) MarkActiveAsInterrupted() (int, error) {
 	return changed, nil
 }
 
+// Delete removes a conversation's JSON file from disk and drops its
+// per-conv mutex from the lock table. Returns os.ErrNotExist when the
+// file is already gone — callers may treat that as success.
+func (s *Store) Delete(roomID, convID string) error {
+	l := s.lockFor(convID)
+	l.Lock()
+	defer l.Unlock()
+
+	if err := os.Remove(s.pathFor(roomID, convID)); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	delete(s.locks, convID)
+	s.mu.Unlock()
+	return nil
+}
+
 // loadLocked reads + parses without taking the lock — caller must hold
 // the per-conv mutex (Load wraps it; Append/Update reuse it).
 func (s *Store) loadLocked(roomID, convID string) (*Conversation, error) {

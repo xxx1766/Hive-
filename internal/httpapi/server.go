@@ -11,18 +11,24 @@
 //
 // Wire surface (all paths under /api/*):
 //
-//	GET  /api/rooms                              list rooms with conv counts
-//	GET  /api/rooms/{id}                         room detail (members + conv summary + volumes)
-//	GET  /api/rooms/{id}/conversations           full list of conversation summaries
-//	GET  /api/rooms/{id}/conversations/{cid}     full conversation transcript
-//	POST /api/rooms/{id}/conversations           create planned conversation
-//	POST /api/rooms/{id}/conversations/{cid}/start
-//	POST /api/rooms/{id}/conversations/{cid}/cancel
-//	GET  /api/rooms/{id}/events                  Server-Sent Events stream
-//	GET  /api/volumes                            list named volumes
-//	GET  /api/volumes/{name}/tree                file tree under a volume
-//	GET  /api/volumes/{name}/file?p=<rel>        file contents (text only, 1MB cap)
-//	GET  /                                       embedded SPA (UI)
+//	GET    /api/rooms                              list rooms with conv counts
+//	GET    /api/rooms/{id}                         room detail (members + conv summary + volumes)
+//	DELETE /api/rooms/{id}                         stop the room and drop persisted state
+//	GET    /api/rooms/{id}/conversations           full list of conversation summaries
+//	GET    /api/rooms/{id}/conversations/{cid}     full conversation transcript
+//	POST   /api/rooms/{id}/conversations           create planned conversation
+//	DELETE /api/rooms/{id}/conversations/{cid}     cancel-if-active then unlink the conv
+//	POST   /api/rooms/{id}/conversations/{cid}/start
+//	POST   /api/rooms/{id}/conversations/{cid}/cancel
+//	GET    /api/rooms/{id}/events                  Server-Sent Events stream
+//	GET    /api/volumes                            list named volumes
+//	POST   /api/volumes                            create a named volume {name}
+//	DELETE /api/volumes/{name}                     remove the volume and everything in it
+//	GET    /api/volumes/{name}/tree                file tree under a volume
+//	GET    /api/volumes/{name}/file?p=<rel>        file contents (text only, 1MB cap)
+//	POST   /api/volumes/{name}/files               multipart upload to <vol>/uploads/<file>
+//	POST   /api/volumes/{name}/fetch               server-side URL → <vol>/uploads/<file>
+//	GET    /                                       embedded SPA (UI)
 package httpapi
 
 import (
@@ -125,6 +131,12 @@ type Server struct {
 	// IPC dispatcher uses, so HTTP and CLI paths produce identical state
 	// changes (including persistence to state.json).
 	renameRoom func(roomID, name string) error
+	// stopRoom terminates all Agents in the Room and drops persisted state
+	// — collapses with "delete" since `room/stop` already wipes state.json.
+	stopRoom func(roomID string) error
+	// deleteConv cancels (if active) then unlinks the conversation JSON
+	// file. Idempotent.
+	deleteConv func(roomID, convID string) error
 
 	httpServer *http.Server
 	listener   net.Listener
@@ -157,7 +169,9 @@ type Hooks struct {
 	CreateConversation func(roomID string, p ConvCreateInput) (string, error)
 	StartConversation  func(roomID, convID string) error
 	CancelConversation func(roomID, convID, reason string) error
+	DeleteConversation func(roomID, convID string) error
 	RenameRoom         func(roomID, name string) error
+	StopRoom           func(roomID string) error
 }
 
 // NewServer wires up an HTTP server. It does not start listening — call
@@ -173,10 +187,12 @@ func NewServer(b Backend, store *conversation.Store, bus *conversation.Bus, vol 
 		convStore:  store,
 		convBus:    bus,
 		volumes:    vol,
-		createConv: hooks.CreateConversation,
-		startConv:  hooks.StartConversation,
-		cancelConv: hooks.CancelConversation,
-		renameRoom: hooks.RenameRoom,
+		createConv:         hooks.CreateConversation,
+		startConv:          hooks.StartConversation,
+		cancelConv:         hooks.CancelConversation,
+		deleteConv:         hooks.DeleteConversation,
+		renameRoom:         hooks.RenameRoom,
+		stopRoom:           hooks.StopRoom,
 	}
 }
 

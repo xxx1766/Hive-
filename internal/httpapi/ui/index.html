@@ -118,7 +118,11 @@
   <section id="tab-volumes" class="tab-panel hidden">
     <div class="grid grid-cols-12 gap-4">
       <div class="col-span-4 bg-white rounded-lg shadow-sm border border-slate-200 flex flex-col min-h-[480px]">
-        <div class="px-3 py-2 border-b border-slate-200 font-semibold text-sm">Volumes</div>
+        <div class="px-3 py-2 border-b border-slate-200 flex items-center gap-2">
+          <span class="font-semibold text-sm">Volumes</span>
+          <span id="vol-scope-label" class="text-[10px] text-slate-500"></span>
+          <button id="vol-scope-toggle" class="ml-auto text-[11px] text-blue-600 hover:underline"></button>
+        </div>
         <div id="volume-list" class="p-2 space-y-1 overflow-y-auto scrollbar"></div>
       </div>
       <div class="col-span-8 bg-white rounded-lg shadow-sm border border-slate-200 flex flex-col min-h-[480px]">
@@ -191,10 +195,35 @@
           <p class="text-[10px] text-slate-500">Initial target is auto-included; add agents from other Rooms here.</p>
         </div>
       </div>
+      <div class="border-t border-slate-200 pt-3">
+        <div class="text-xs font-medium text-slate-700 mb-1.5">Files (optional)</div>
+        <div class="flex gap-1.5 items-center">
+          <select id="nc-vol" class="border border-slate-300 rounded px-2 py-1 text-sm bg-white flex-1"></select>
+        </div>
+        <div id="nc-vol-create-panel" class="hidden mt-2 flex gap-1.5">
+          <input id="nc-vol-create-name" maxlength="64" placeholder="new volume name" class="border border-slate-300 rounded px-2 py-1 text-sm flex-1">
+          <button id="nc-vol-create-btn" class="bg-slate-200 hover:bg-slate-300 px-2 py-1 rounded text-xs font-medium">Create</button>
+          <button id="nc-vol-create-cancel" class="text-slate-400 hover:text-slate-700 text-xs px-1">×</button>
+        </div>
+        <div id="nc-files-row" class="hidden mt-2 space-y-1.5">
+          <div class="flex gap-1.5 items-center">
+            <input type="file" id="nc-file-input" multiple class="text-xs flex-1">
+          </div>
+          <div class="flex gap-1.5 items-center">
+            <input id="nc-url-input" type="url" placeholder="https://..." class="border border-slate-300 rounded px-2 py-1 text-sm flex-1">
+            <button id="nc-url-add" class="bg-slate-200 hover:bg-slate-300 px-2 py-1 rounded text-xs font-medium">+ URL</button>
+          </div>
+          <div id="nc-uploads-chips" class="flex flex-wrap gap-1"></div>
+          <p class="text-[10px] text-slate-500">Files land at <code class="font-mono">&lt;volume&gt;/uploads/&lt;filename&gt;</code>. To make a newly-created Volume reachable from existing Agents, re-hire them with <code class="font-mono">--volume</code>.</p>
+        </div>
+      </div>
     </div>
-    <div class="mt-4 flex justify-end gap-2">
-      <button id="nc-cancel" class="px-3 py-1.5 text-sm border border-slate-300 rounded">Cancel</button>
-      <button id="nc-submit" class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded font-medium">Create</button>
+    <div class="mt-4 flex items-center gap-2">
+      <span id="nc-status" class="text-xs text-slate-500"></span>
+      <div class="ml-auto flex gap-2">
+        <button id="nc-cancel" class="px-3 py-1.5 text-sm border border-slate-300 rounded">Cancel</button>
+        <button id="nc-submit" class="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded font-medium">Create</button>
+      </div>
     </div>
   </div>
 </div>
@@ -221,6 +250,14 @@ const state = {
   // Sidebar inline-rename: when set, the matching room renders an
   // <input> instead of its name span. Cleared on commit/cancel.
   editingRoomID: null,
+  // New-conversation modal: pending uploads to flush to the chosen
+  // volume right before the conversation is created. Each entry is
+  // {kind:'file', file:File} or {kind:'url', url:string, name:string}.
+  pendingUploads: [],
+  // Volumes tab: 'room' filters to volumes mounted in the current Room
+  // (RoomDetail.volume_names); 'all' shows the global list. Toggle UI
+  // sits at the top of the Volumes tab.
+  volumesScope: 'room',
 };
 
 // Stable per-agent color palette (10 distinct hues, hashed by name).
@@ -339,20 +376,47 @@ function roomSidebarItem(r) {
     <div class="flex items-center gap-1">
       <span class="font-medium text-sm flex-1 truncate" title="${escapeHtml(r.name)}">${escapeHtml(r.name)}</span>
       <button class="rename-btn opacity-0 group-hover:opacity-100 text-slate-400 hover:text-blue-600 text-xs px-1" title="Rename">✎</button>
+      <button class="delete-btn opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-600 text-xs px-1" title="Delete room">×</button>
     </div>
     <div class="text-[10px] text-slate-500 flex items-center gap-1 badge">
       <span>${total} ${total === 1 ? 'conv' : 'convs'}</span>
       <span class="text-slate-300 truncate" title="${escapeHtml(r.room_id)}">· ${escapeHtml(r.room_id.slice(-12))}</span>
     </div>`;
-  // Click anywhere except the pencil → switch room.
+  // Click anywhere except action buttons → switch room.
   item.addEventListener('click', e => {
-    if (e.target.classList.contains('rename-btn')) return;
+    if (e.target.classList.contains('rename-btn') || e.target.classList.contains('delete-btn')) return;
     if (r.room_id !== state.currentRoomID) selectRoom(r.room_id);
   });
   item.querySelector('.rename-btn').addEventListener('click', e => {
     e.stopPropagation();
     state.editingRoomID = r.room_id;
     renderRoomSidebar();
+  });
+  item.querySelector('.delete-btn').addEventListener('click', async e => {
+    e.stopPropagation();
+    if (!confirm(`Delete Room "${r.name}"?\nAll Agents will be terminated and the Room's persisted state will be dropped. This cannot be undone.`)) return;
+    try {
+      await api(`/api/rooms/${r.room_id}`, {method: 'DELETE'});
+      const wasCurrent = r.room_id === state.currentRoomID;
+      state.rooms = state.rooms.filter(rr => rr.room_id !== r.room_id);
+      if (wasCurrent) {
+        state.currentRoomID = null;
+        state.currentRoom = null;
+        state.conversations = [];
+        if (state.sse) { state.sse.close(); state.sse = null; }
+        if (state.rooms.length > 0) {
+          await selectRoom(state.rooms[0].room_id);
+        } else {
+          renderRoomSidebar();
+          setEmptyState();
+          renderVolumeList();
+        }
+      } else {
+        renderRoomSidebar();
+      }
+    } catch (err) {
+      alert('Delete failed: ' + err.message);
+    }
   });
   return item;
 }
@@ -397,6 +461,10 @@ async function selectRoom(roomID) {
   setStatus('live');
   await reloadConversations();
   renderTeam();
+  // Volumes tab is room-scoped by default — re-render so the panel
+  // reflects the new Room's mounted volumes even when the tab isn't open.
+  state.volumesScope = 'room';
+  renderVolumeList();
   subscribeSSE(roomID);
 }
 
@@ -464,8 +532,11 @@ function convCard(c) {
     interrupted: 'bg-amber-100 text-amber-700',
   })[c.status] || 'bg-slate-100 text-slate-700';
 
-  card.className = 'conv-card cursor-pointer border border-slate-200 hover:border-blue-400 rounded-md px-3 py-2 bg-white';
-  card.onclick = () => selectConversation(c.id);
+  card.className = 'conv-card cursor-pointer border border-slate-200 hover:border-blue-400 rounded-md px-3 py-2 bg-white group';
+  card.addEventListener('click', e => {
+    if (e.target.closest('.conv-delete-btn')) return;
+    selectConversation(c.id);
+  });
   const created = c.created_at ? new Date(c.created_at).toLocaleTimeString() : '';
   const tag = c.tag || c.id.slice(0, 16);
   // Cross-Room badge: shown when Members spans 2+ distinct Rooms.
@@ -485,6 +556,7 @@ function convCard(c) {
       <span class="text-[10px] font-mono px-1.5 py-0.5 rounded ${statusColor} badge">${c.status}</span>
       <span class="font-medium text-sm flex-1 truncate" title="${escapeHtml(tag)}">${escapeHtml(tag)}</span>
       ${xRoomBadge}
+      <button class="conv-delete-btn opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-600 text-xs leading-none px-1" title="Delete conversation">×</button>
     </div>
     <div class="mt-1 text-xs text-slate-500 flex items-center gap-2 badge">
       <span>→ <b style="color:${colorFor(c.initial_target)}">${escapeHtml(c.initial_target)}</b></span>
@@ -493,6 +565,22 @@ function convCard(c) {
     ${isActive ? '<div class="mt-1.5"><span class="typing"></span><span class="typing"></span><span class="typing"></span></div>' : ''}
     <div class="text-[10px] text-slate-400 mt-1 badge">${created}</div>
   `;
+  card.querySelector('.conv-delete-btn').addEventListener('click', async e => {
+    e.stopPropagation();
+    const label = c.tag || c.id;
+    if (!confirm(`Delete conversation "${label}"?\nIf it's still running, it will be cancelled first. The transcript file is removed and cannot be recovered.`)) return;
+    try {
+      await api(`/api/rooms/${state.currentRoomID}/conversations/${c.id}`, {method: 'DELETE'});
+      if (state.selectedConvID === c.id) {
+        state.selectedConvID = null;
+        state.selectedConv = null;
+        document.getElementById('timeline-panel').classList.add('hidden');
+      }
+      await reloadConversations();
+    } catch (err) {
+      alert('Delete failed: ' + err.message);
+    }
+  });
   if (state.selectedConvID === c.id) {
     card.classList.add('ring-2','ring-blue-400');
   }
@@ -676,9 +764,163 @@ document.getElementById('new-conv-btn').onclick = () => {
   state.xroomChips = [];
   renderXroomChips();
   populateXroomRoomSelect();
+  // Reset Files section: empty pending list, repopulate volume picker
+  // from currentRoom.volume_names + state.volumes for "+ create new".
+  state.pendingUploads = [];
+  renderUploadsChips();
+  populateVolumePicker();
+  document.getElementById('nc-files-row').classList.add('hidden');
+  document.getElementById('nc-vol-create-panel').classList.add('hidden');
+  document.getElementById('nc-vol-create-name').value = '';
+  document.getElementById('nc-url-input').value = '';
+  document.getElementById('nc-file-input').value = '';
+  document.getElementById('nc-status').textContent = '';
   document.getElementById('new-conv-modal').classList.remove('hidden');
   document.getElementById('new-conv-modal').classList.add('flex');
 };
+
+// Populates the Files-section [Volume ▾] dropdown with the current
+// Room's mounted volumes plus a sentinel "+ create new volume" entry.
+// "(none — skip uploads)" is the default; picking it hides the file
+// inputs entirely.
+function populateVolumePicker() {
+  const sel = document.getElementById('nc-vol');
+  sel.innerHTML = '';
+  const noneOpt = document.createElement('option');
+  noneOpt.value = '__none__';
+  noneOpt.textContent = '(none — skip uploads)';
+  sel.appendChild(noneOpt);
+  const roomVols = (state.currentRoom && state.currentRoom.volume_names) || [];
+  for (const name of roomVols) {
+    const o = document.createElement('option');
+    o.value = name;
+    o.textContent = name + '  (mounted)';
+    sel.appendChild(o);
+  }
+  // Volumes that exist daemon-wide but aren't mounted into this Room —
+  // user can still write to them, but should know agents won't see it.
+  for (const v of state.volumes) {
+    if (roomVols.includes(v.name)) continue;
+    const o = document.createElement('option');
+    o.value = v.name;
+    o.textContent = v.name + '  (not mounted)';
+    sel.appendChild(o);
+  }
+  const createOpt = document.createElement('option');
+  createOpt.value = '__create__';
+  createOpt.textContent = '+ create new volume…';
+  sel.appendChild(createOpt);
+  sel.value = '__none__';
+}
+
+document.getElementById('nc-vol').addEventListener('change', e => {
+  const v = e.target.value;
+  const filesRow = document.getElementById('nc-files-row');
+  const createPanel = document.getElementById('nc-vol-create-panel');
+  if (v === '__create__') {
+    createPanel.classList.remove('hidden');
+    filesRow.classList.add('hidden');
+    document.getElementById('nc-vol-create-name').focus();
+  } else if (v === '__none__') {
+    createPanel.classList.add('hidden');
+    filesRow.classList.add('hidden');
+  } else {
+    createPanel.classList.add('hidden');
+    filesRow.classList.remove('hidden');
+  }
+});
+
+// Inline create flow — POSTs /api/volumes, refreshes state.volumes,
+// re-renders the picker with the new name selected.
+document.getElementById('nc-vol-create-btn').onclick = async () => {
+  const name = document.getElementById('nc-vol-create-name').value.trim();
+  if (!name) { alert('volume name is required'); return; }
+  try {
+    await api('/api/volumes', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({name}),
+    });
+    state.volumes = await api('/api/volumes');
+    populateVolumePicker();
+    document.getElementById('nc-vol').value = name;
+    document.getElementById('nc-vol').dispatchEvent(new Event('change'));
+    if (state.currentRoomID) renderVolumeList();
+  } catch (e) {
+    alert('Create volume failed: ' + e.message);
+  }
+};
+document.getElementById('nc-vol-create-cancel').onclick = () => {
+  document.getElementById('nc-vol').value = '__none__';
+  document.getElementById('nc-vol').dispatchEvent(new Event('change'));
+};
+
+// File chooser → push every selected File into pendingUploads.
+document.getElementById('nc-file-input').addEventListener('change', e => {
+  for (const f of e.target.files) {
+    state.pendingUploads.push({kind: 'file', file: f, name: f.name});
+  }
+  e.target.value = '';
+  renderUploadsChips();
+});
+
+// URL input → push one entry; default name is the URL's tail segment.
+document.getElementById('nc-url-add').onclick = () => {
+  const inp = document.getElementById('nc-url-input');
+  const url = inp.value.trim();
+  if (!url) return;
+  let name = 'download';
+  try {
+    const u = new URL(url);
+    const last = u.pathname.split('/').filter(Boolean).pop();
+    if (last) name = last;
+  } catch (e) {
+    alert('invalid URL: ' + e.message); return;
+  }
+  state.pendingUploads.push({kind: 'url', url, name});
+  inp.value = '';
+  renderUploadsChips();
+};
+
+function renderUploadsChips() {
+  const wrap = document.getElementById('nc-uploads-chips');
+  wrap.innerHTML = '';
+  for (let i = 0; i < state.pendingUploads.length; i++) {
+    const u = state.pendingUploads[i];
+    const chip = document.createElement('span');
+    chip.className = 'inline-flex items-center gap-1 bg-slate-100 text-slate-800 text-xs px-2 py-0.5 rounded';
+    const label = u.kind === 'file' ? `📄 ${u.name}` : `🔗 ${u.name}`;
+    chip.innerHTML = `${escapeHtml(label)} <button class="ml-1 text-slate-500 hover:text-red-700" data-idx="${i}">×</button>`;
+    chip.querySelector('button').onclick = () => {
+      state.pendingUploads.splice(i, 1);
+      renderUploadsChips();
+    };
+    wrap.appendChild(chip);
+  }
+}
+
+// flushPendingUploads writes every staged upload to the chosen volume,
+// in order. Throws on the first failure so the caller can abort the
+// conversation create. Updates #nc-status as it progresses.
+async function flushPendingUploads(volume) {
+  const status = document.getElementById('nc-status');
+  for (let i = 0; i < state.pendingUploads.length; i++) {
+    const u = state.pendingUploads[i];
+    status.textContent = `Uploading ${i + 1}/${state.pendingUploads.length} — ${u.name}…`;
+    if (u.kind === 'file') {
+      const fd = new FormData();
+      fd.append('file', u.file, u.name);
+      const r = await fetch(`/api/volumes/${volume}/files`, {method: 'POST', body: fd});
+      if (!r.ok) throw new Error(`${u.name}: ${r.status} ${await r.text()}`);
+    } else {
+      const r = await fetch(`/api/volumes/${volume}/fetch`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({url: u.url, filename: u.name}),
+      });
+      if (!r.ok) throw new Error(`${u.name}: ${r.status} ${await r.text()}`);
+    }
+  }
+  status.textContent = '';
+}
 
 // Cross-Room toggle — show/hide the picker panel.
 document.getElementById('nc-xroom').addEventListener('change', e => {
@@ -812,6 +1054,23 @@ document.getElementById('nc-submit').onclick = async () => {
       ...state.xroomChips,
     ];
   }
+  // Validate uploads vs. volume picker BEFORE creating the conv. If any
+  // upload fails the conv is never created, so the user can fix and retry
+  // without a half-broken room state to clean up.
+  const volumeChoice = document.getElementById('nc-vol').value;
+  if (state.pendingUploads.length > 0) {
+    if (volumeChoice === '__none__' || volumeChoice === '__create__') {
+      alert('Pick a target Volume for the staged files (or remove them).');
+      return;
+    }
+    try {
+      await flushPendingUploads(volumeChoice);
+    } catch (e) {
+      document.getElementById('nc-status').textContent = '';
+      alert('Upload failed: ' + e.message);
+      return;
+    }
+  }
   try {
     const res = await api(`/api/rooms/${state.currentRoomID}/conversations`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
@@ -840,6 +1099,7 @@ function subscribeSSE(roomID) {
   sse.addEventListener('conversation.message', onConvEvent);
   sse.addEventListener('conversation.status', onConvEvent);
   sse.addEventListener('conversation.finished', onConvEvent);
+  sse.addEventListener('conversation.deleted', onConvEvent);
   sse.onerror = () => setStatus('disconnected — reconnecting', true);
 }
 
@@ -858,14 +1118,48 @@ async function onConvEvent(e) {
 }
 
 // ── Volumes tab ───────────────────────────────────────────────────
+//
+// Scoping: when state.volumesScope === 'room' AND the selected Room has
+// any mounted volumes, the list is filtered to that intersection. The
+// header row exposes a toggle so the user can flip to the global view.
+// When no Room is selected, the toggle is hidden and we always show all.
 function renderVolumeList() {
   const el = document.getElementById('volume-list');
+  const labelEl = document.getElementById('vol-scope-label');
+  const toggleEl = document.getElementById('vol-scope-toggle');
   el.innerHTML = '';
-  if (state.volumes.length === 0) {
-    el.innerHTML = '<div class="text-xs text-slate-400 italic px-1 py-2">no volumes</div>';
+
+  const room = state.currentRoom;
+  const roomVolNames = (room && room.volume_names) || [];
+  const canFilter = state.currentRoomID && roomVolNames.length > 0;
+
+  let display = state.volumes;
+  if (canFilter && state.volumesScope === 'room') {
+    const allow = new Set(roomVolNames);
+    display = state.volumes.filter(v => allow.has(v.name));
+    labelEl.textContent = `· mounted in ${room.name}`;
+    toggleEl.textContent = 'Show all';
+    toggleEl.classList.remove('hidden');
+    toggleEl.onclick = () => { state.volumesScope = 'all'; renderVolumeList(); };
+  } else if (canFilter) {
+    labelEl.textContent = `· all volumes`;
+    toggleEl.textContent = `Filter to ${room.name}`;
+    toggleEl.classList.remove('hidden');
+    toggleEl.onclick = () => { state.volumesScope = 'room'; renderVolumeList(); };
+  } else {
+    labelEl.textContent = '';
+    toggleEl.classList.add('hidden');
+  }
+
+  if (display.length === 0) {
+    if (canFilter && state.volumesScope === 'room') {
+      el.innerHTML = `<div class="text-xs text-slate-400 italic px-1 py-2">no volumes mounted in this Room.<br>Hire an Agent with <code class="font-mono">--volume</code>, or click "Show all" to see global volumes.</div>`;
+    } else {
+      el.innerHTML = '<div class="text-xs text-slate-400 italic px-1 py-2">no volumes</div>';
+    }
     return;
   }
-  for (const v of state.volumes) {
+  for (const v of display) {
     const row = document.createElement('div');
     row.className = 'cursor-pointer hover:bg-slate-50 rounded px-2 py-1 text-sm';
     row.textContent = v.name;

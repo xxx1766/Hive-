@@ -191,6 +191,7 @@ func (d *Daemon) Register(srv *ipc.Server) {
 	srv.Handle(ipc.MethodConversationList, d.handleConversationList)
 	srv.Handle(ipc.MethodConversationGet, d.handleConversationGet)
 	srv.Handle(ipc.MethodConversationCancel, d.handleConversationCancel)
+	srv.Handle(ipc.MethodConversationDelete, d.handleConversationDelete)
 }
 
 // Shutdown stops every Room. Called when hived receives SIGTERM.
