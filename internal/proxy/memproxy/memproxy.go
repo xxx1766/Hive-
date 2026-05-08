@@ -111,15 +111,21 @@ func (p *Proxy) Get(params json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dir, encodeKey(r.Key))
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return rpc.MemoryGetResult{Exists: false}, nil
+	// Read priority:
+	//   1. encoded filename (the canonical memory_put format)
+	//   2. raw filename, when the encoded form is missing — covers
+	//      the "user manually copied a UTF-8-named file into memory/"
+	//      flow which would otherwise be invisible.
+	for _, candidate := range []string{encodeKey(r.Key), r.Key} {
+		data, err := os.ReadFile(filepath.Join(dir, candidate))
+		if err == nil {
+			return rpc.MemoryGetResult{Value: data, Exists: true}, nil
 		}
-		return nil, err
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
 	}
-	return rpc.MemoryGetResult{Value: data, Exists: true}, nil
+	return rpc.MemoryGetResult{Exists: false}, nil
 }
 
 func (p *Proxy) List(params json.RawMessage) (any, error) {
@@ -141,15 +147,29 @@ func (p *Proxy) List(params json.RawMessage) (any, error) {
 		}
 		return nil, err
 	}
+	seen := make(map[string]bool, len(entries))
 	keys := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if e.IsDir() || strings.HasPrefix(e.Name(), ".put-") {
+		nm := e.Name()
+		if e.IsDir() || strings.HasPrefix(nm, ".put-") {
 			continue
 		}
-		k, err := decodeKey(e.Name())
-		if err != nil {
-			continue // skip unrecognised filenames
+		// Pick the canonical key: when the on-disk filename round-trips
+		// cleanly through encode→decode→encode, it was written via
+		// memory_put — return the decoded form. Otherwise (raw file
+		// dropped in by hand, including UTF-8 names that PathEscape
+		// would otherwise mangle), return the raw filename so callers
+		// can use it as a key directly.
+		var k string
+		if decoded, derr := decodeKey(nm); derr == nil && encodeKey(decoded) == nm {
+			k = decoded
+		} else {
+			k = nm
 		}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
 		if r.Prefix != "" && !strings.HasPrefix(k, r.Prefix) {
 			continue
 		}
@@ -174,9 +194,12 @@ func (p *Proxy) Delete(params json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dir, encodeKey(r.Key))
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+	// Remove both forms in case both happen to coexist (paranoid; the
+	// usual case is exactly one of them). Missing-file is not an error.
+	for _, candidate := range []string{encodeKey(r.Key), r.Key} {
+		if err := os.Remove(filepath.Join(dir, candidate)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
 	}
 	return struct{}{}, nil
 }

@@ -17,11 +17,32 @@ import (
 	"time"
 )
 
-// uploadsSubdir is where browser-uploaded artifacts land inside a Volume.
-// Kept distinct from `memory/` (KV scope used by agents via memory/* RPC)
-// so user uploads and agent-written keys don't visually collide when an
-// agent enumerates the bind-mount.
+// uploadsSubdir is the default destination for browser-uploaded
+// artifacts inside a Volume. Kept distinct from `memory/` (the KV
+// scope used by agents via memory/* RPC) so user uploads and agent-
+// written keys don't visually collide. The upload endpoint accepts
+// a `?subdir=` query to switch between the two — see
+// validatedUploadSubdir below for the allow-list.
 const uploadsSubdir = "uploads"
+
+// memorySubdir is the agent-readable KV root. Files placed here can
+// be read via memory_get (with the raw-name fallback for files that
+// land here without going through memory_put).
+const memorySubdir = "memory"
+
+// validatedUploadSubdir maps the `?subdir=` query value onto the
+// canonical subdir name. Empty/absent → uploads (legacy default).
+// Anything outside the allow-list is rejected with an error so a
+// typo or path-traversal attempt fails closed.
+func validatedUploadSubdir(q string) (string, error) {
+	switch strings.TrimSpace(q) {
+	case "", "uploads":
+		return uploadsSubdir, nil
+	case "memory":
+		return memorySubdir, nil
+	}
+	return "", errors.New("subdir: must be 'uploads' or 'memory'")
+}
 
 // defaultUploadCapBytes is the per-request size cap for both multipart
 // uploads and URL fetches. Override via HIVE_UPLOAD_MAX_MB.
@@ -43,9 +64,14 @@ func uploadCap() int64 {
 
 // uploadVolumeFile handles POST /api/volumes/{name}/files (multipart).
 // Expects a single file part named "file"; writes it atomically to
-// <vol>/uploads/<basename>. Refuses overwrites (409) so a second upload
-// with the same filename surfaces explicitly rather than silently
-// clobbering an earlier dataset.
+// <vol>/<subdir>/<basename>. `subdir` is "uploads" by default but
+// callers can pass `?subdir=memory` to target the agent-readable
+// scope directly — useful when uploading source files an Agent will
+// then memory_get without manual copy steps.
+//
+// Refuses overwrites (409) so a second upload with the same filename
+// surfaces explicitly rather than silently clobbering an earlier
+// dataset.
 func (s *Server) uploadVolumeFile(w http.ResponseWriter, r *http.Request, name string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -54,6 +80,11 @@ func (s *Server) uploadVolumeFile(w http.ResponseWriter, r *http.Request, name s
 	vol, err := s.volumes.Get(name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	subdir, err := validatedUploadSubdir(r.URL.Query().Get("subdir"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	maxBytes := uploadCap()
@@ -77,7 +108,7 @@ func (s *Server) uploadVolumeFile(w http.ResponseWriter, r *http.Request, name s
 	}
 	defer f.Close()
 
-	dst, err := safeUploadPath(vol.Path, fh.Filename)
+	dst, err := safeUploadPath(vol.Path, subdir, fh.Filename)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -93,7 +124,7 @@ func (s *Server) uploadVolumeFile(w http.ResponseWriter, r *http.Request, name s
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"volume": vol.Name,
-		"path":   path.Join(uploadsSubdir, filepath.Base(dst)),
+		"path":   path.Join(subdir, filepath.Base(dst)),
 		"size":   written,
 	})
 }
@@ -119,6 +150,11 @@ func (s *Server) fetchVolumeFile(w http.ResponseWriter, r *http.Request, name st
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	subdir, err := validatedUploadSubdir(r.URL.Query().Get("subdir"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if err := validateFetchURL(p.URL); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -127,7 +163,7 @@ func (s *Server) fetchVolumeFile(w http.ResponseWriter, r *http.Request, name st
 	if filename == "" {
 		filename = filenameFromURL(p.URL)
 	}
-	dst, err := safeUploadPath(vol.Path, filename)
+	dst, err := safeUploadPath(vol.Path, subdir, filename)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -164,7 +200,7 @@ func (s *Server) fetchVolumeFile(w http.ResponseWriter, r *http.Request, name st
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"volume": vol.Name,
-		"path":   path.Join(uploadsSubdir, filepath.Base(dst)),
+		"path":   path.Join(subdir, filepath.Base(dst)),
 		"size":   written,
 	})
 }
@@ -216,10 +252,12 @@ func (s *Server) serveVolumeFilePut(w http.ResponseWriter, r *http.Request, name
 	})
 }
 
-// safeUploadPath joins volRoot/uploads/<basename(filename)> with strict
-// validation: no path separators, no dotfiles, no `..`, must resolve
-// inside volRoot/uploads/.
-func safeUploadPath(volRoot, raw string) (string, error) {
+// safeUploadPath joins volRoot/<subdir>/<basename(filename)> with strict
+// validation: no path separators in the filename, no dotfiles, no `..`,
+// the result must resolve inside volRoot/<subdir>/. The subdir is
+// already validated by validatedUploadSubdir; we re-check the resolve
+// here just to keep this helper self-contained.
+func safeUploadPath(volRoot, subdir, raw string) (string, error) {
 	base := filepath.Base(strings.TrimSpace(raw))
 	if base == "" || base == "." || base == ".." || base == string(os.PathSeparator) {
 		return "", errors.New("filename: empty or invalid")
@@ -230,14 +268,14 @@ func safeUploadPath(volRoot, raw string) (string, error) {
 	if strings.ContainsAny(base, "/\\") {
 		return "", errors.New("filename: must be a basename, not a path")
 	}
-	uploadDir := filepath.Join(volRoot, uploadsSubdir)
-	if err := os.MkdirAll(uploadDir, 0o750); err != nil {
-		return "", fmt.Errorf("mkdir uploads: %w", err)
+	dir := filepath.Join(volRoot, subdir)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return "", fmt.Errorf("mkdir %s: %w", subdir, err)
 	}
-	abs := filepath.Join(uploadDir, base)
+	abs := filepath.Join(dir, base)
 	clean := filepath.Clean(abs)
-	if !strings.HasPrefix(clean, uploadDir+string(os.PathSeparator)) {
-		return "", errors.New("filename: resolves outside uploads/")
+	if !strings.HasPrefix(clean, dir+string(os.PathSeparator)) {
+		return "", fmt.Errorf("filename: resolves outside %s/", subdir)
 	}
 	return clean, nil
 }
