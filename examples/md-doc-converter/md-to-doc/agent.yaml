@@ -1,12 +1,8 @@
 name: md-to-doc
-version: 0.1.0
-kind: skill
-skill: SKILL.md
-model: openai/gpt-5.4-mini
+version: 0.2.0
+kind: binary
+entry: bin/md-to-doc
 rank: staff
-tools: [llm, peer, memory]
+tools: [memory]
 capabilities:
   provides: [md-to-doc-converter]
-quota:
-  tokens:
-    "openai/gpt-5.4-mini": 16000

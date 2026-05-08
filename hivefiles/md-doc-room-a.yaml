@@ -3,9 +3,5 @@
 room: md-doc-room-a
 entry: md-to-doc
 agents:
-  - image: md-to-doc:0.1.0
+  - image: md-to-doc:0.2.0
     rank: staff
-    model: openai/gpt-5.4-mini
-    quota:
-      tokens:
-        "openai/gpt-5.4-mini": 16000
