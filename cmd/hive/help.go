@@ -195,6 +195,16 @@ Flags:
 After install, hived may still be running the previous binary in memory —
 the command prints a restart hint when it detects a running daemon.`,
 	},
+	"ui": {
+		usage: "hive ui",
+		brief: "print the UI URL (and SSH tunnel hint when remote)",
+		long: `Prints the URL hived is serving the SPA on, derived from
+HIVE_HTTP_ADDR (default 127.0.0.1:8910). When you're on a remote host
+(SSH_CONNECTION set), also prints the ssh -L tunnel command you need
+to make the URL reachable from your local browser.
+
+Does not require the daemon to be running.`,
+	},
 	"help": {
 		usage: "hive help [<command>]",
 		brief: "show this help or per-command help",
@@ -209,7 +219,7 @@ the command prints a restart hint when it detects a running daemon.`,
 // cmdOrder controls the top-level help's display order — roughly grouped:
 // diagnostics / image lifecycle / room lifecycle / task lifecycle / debug.
 var cmdOrder = []string{
-	"version", "ping",
+	"version", "ping", "ui",
 	"build", "agents", "pull",
 	"volume",
 	"init", "rooms",

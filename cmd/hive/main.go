@@ -87,6 +87,7 @@ func mustDial(ctx context.Context) *ipc.Client {
 		time.Sleep(80 * time.Millisecond)
 		c, err = ipc.Dial(ctx, ipc.SocketPath())
 		if err == nil {
+			printSpawnHint()
 			return c
 		}
 	}
@@ -141,6 +142,24 @@ func spawnDaemon() error {
 	// File handle stays open in the child via dup2-on-exec; close our copy.
 	_ = logFile.Close()
 	return nil
+}
+
+// printSpawnHint tells the user a fresh hived is now running and where
+// the UI is. Goes to stderr so script-parsed stdout isn't polluted.
+// Adds a tunnel breadcrumb when SSH_CONNECTION is set — that's when the
+// user's browser likely won't reach 127.0.0.1:8910 without `ssh -L`.
+func printSpawnHint() {
+	addr := httpAddrForDisplay()
+	if addr == "" {
+		fmt.Fprintln(os.Stderr, "hive: started hived (HTTP UI disabled)")
+		return
+	}
+	url := "http://" + addr
+	if os.Getenv("SSH_CONNECTION") != "" {
+		fmt.Fprintf(os.Stderr, "hive: started hived (ui %s — see `hive ui` for tunnel)\n", url)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "hive: started hived (ui %s)\n", url)
 }
 
 // locateHived finds the hived binary — first next to the running hive
