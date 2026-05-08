@@ -3,8 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/anne-x/hive/internal/ipc"
@@ -66,12 +70,92 @@ func main() {
 
 func mustDial(ctx context.Context) *ipc.Client {
 	c, err := ipc.Dial(ctx, ipc.SocketPath())
-	if err != nil {
+	if err == nil {
+		return c
+	}
+	if !isDaemonAbsent(err) {
 		fmt.Fprintf(os.Stderr, "hive: cannot connect to hived (%v)\n", err)
-		fmt.Fprintf(os.Stderr, "      is the daemon running? try: hived &\n")
 		os.Exit(1)
 	}
-	return c
+	if spawnErr := spawnDaemon(); spawnErr != nil {
+		fmt.Fprintf(os.Stderr, "hive: cannot connect to hived (%v)\n", err)
+		fmt.Fprintf(os.Stderr, "      auto-start failed: %v\n", spawnErr)
+		os.Exit(1)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(80 * time.Millisecond)
+		c, err = ipc.Dial(ctx, ipc.SocketPath())
+		if err == nil {
+			return c
+		}
+	}
+	fmt.Fprintf(os.Stderr, "hive: hived was started but didn't become reachable in 3s\n")
+	fmt.Fprintf(os.Stderr, "      check %s for startup errors\n", filepath.Join(ipc.StateRoot(), "hived.log"))
+	os.Exit(1)
+	return nil
+}
+
+// isDaemonAbsent reports whether a dial error means the daemon isn't
+// running — connection-refused (socket file present, nothing listening)
+// or ENOENT (no socket file at all). Other errors (permission, malformed
+// path, etc.) are excluded so spawning won't paper over real config bugs.
+func isDaemonAbsent(err error) bool {
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	// net.OpError wraps the syscall errno; errors.Is unwraps already, but
+	// some Go versions stop at net.OpError. Belt-and-braces:
+	var se syscall.Errno
+	if errors.As(err, &se) {
+		return se == syscall.ECONNREFUSED || se == syscall.ENOENT
+	}
+	return false
+}
+
+// spawnDaemon fork-exec's hived in the background, redirecting its
+// output to <state_root>/hived.log. The child is detached via setsid so
+// it survives this CLI process.
+func spawnDaemon() error {
+	hivedPath, err := locateHived()
+	if err != nil {
+		return err
+	}
+	stateRoot := ipc.StateRoot()
+	if err := os.MkdirAll(stateRoot, 0o750); err != nil {
+		return fmt.Errorf("create state dir: %w", err)
+	}
+	logPath := filepath.Join(stateRoot, "hived.log")
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
+	if err != nil {
+		return fmt.Errorf("open log: %w", err)
+	}
+	cmd := exec.Command(hivedPath)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
+		return fmt.Errorf("exec %s: %w", hivedPath, err)
+	}
+	// File handle stays open in the child via dup2-on-exec; close our copy.
+	_ = logFile.Close()
+	return nil
+}
+
+// locateHived finds the hived binary — first next to the running hive
+// binary (typical install layout), then on $PATH.
+func locateHived() (string, error) {
+	if exe, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(exe), "hived")
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			return candidate, nil
+		}
+	}
+	if p, err := exec.LookPath("hived"); err == nil {
+		return p, nil
+	}
+	return "", errors.New("hived binary not found next to hive or on PATH")
 }
 
 func cmdVersion(ctx context.Context) {
