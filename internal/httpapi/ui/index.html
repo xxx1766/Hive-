@@ -1479,13 +1479,18 @@ document.getElementById('new-conv-btn').onclick = () => {
     bindingRow.classList.add('hidden');
     bindingRow.classList.remove('flex');
   }
+  // Reset template picker state. Visibility is owned by
+  // applySmartInputVisibility() (called via refreshSmartInputForTarget
+  // below) — DO NOT touch nc-template-row's hidden class here, that
+  // would stomp on the visibility decision and leave the row hidden
+  // even when Smart is on for md-to-doc.
+  state.templatePick = null;
+  document.getElementById('nc-template-pick').value = '';
+  document.getElementById('nc-existing-pick').value = '';
   // Smart input visibility — only useful for agents whose input shape
   // we know how to auto-build (md-to-doc today). Other targets keep
   // the JSON-only path.
   refreshSmartInputForTarget();
-  // Reset template picker.
-  state.templatePick = null;
-  document.getElementById('nc-template-row').classList.add('hidden');
   document.getElementById('new-conv-modal').classList.remove('hidden');
   document.getElementById('new-conv-modal').classList.add('flex');
 };
