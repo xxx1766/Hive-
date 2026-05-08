@@ -147,9 +147,21 @@
       <div class="col-span-8 bg-white rounded-lg shadow-sm border border-slate-200 flex flex-col min-h-[480px]">
         <div class="px-3 py-2 border-b border-slate-200 font-semibold text-sm flex items-center gap-2">
           <span id="vol-file-name" class="font-mono text-xs text-slate-700" data-i18n="vol.select_file">select a file</span>
-          <span id="vol-file-size" class="text-xs text-slate-400 ml-auto"></span>
+          <span id="vol-file-size" class="text-xs text-slate-400"></span>
+          <!-- Per-file actions. Hidden until a file is loaded. Edit
+               disables itself for binary / truncated files; Download
+               always works regardless. -->
+          <div id="vol-file-actions" class="hidden ml-auto flex items-center gap-1">
+            <button id="vol-download-btn" class="text-xs bg-slate-100 hover:bg-slate-200 px-2 py-0.5 rounded" data-i18n="vol.download">⬇ Download</button>
+            <button id="vol-edit-btn" class="text-xs bg-slate-100 hover:bg-slate-200 px-2 py-0.5 rounded" data-i18n="vol.edit">✎ Edit</button>
+            <button id="vol-save-btn" class="hidden text-xs bg-blue-600 hover:bg-blue-700 text-white px-2 py-0.5 rounded" data-i18n="vol.save">Save</button>
+            <button id="vol-cancel-btn" class="hidden text-xs bg-slate-200 hover:bg-slate-300 px-2 py-0.5 rounded" data-i18n="vol.cancel_edit">Cancel</button>
+          </div>
         </div>
+        <!-- View vs edit. Switch via classList "hidden" — only one of
+             pre / textarea is visible at a time. -->
         <pre id="vol-file-body" class="p-3 overflow-auto scrollbar text-xs font-mono whitespace-pre-wrap break-words flex-1"></pre>
+        <textarea id="vol-file-edit" class="hidden p-3 overflow-auto scrollbar text-xs font-mono whitespace-pre-wrap break-words flex-1 outline-none border-0 resize-none" spellcheck="false"></textarea>
       </div>
     </div>
   </section>
@@ -349,6 +361,17 @@ const I18N = {
     'vol.empty.room': 'no volumes mounted in this Room.<br>Hire an Agent with <code class="font-mono">--volume</code>, or click "Show all" to see global volumes.',
     'vol.select_file': 'select a file',
     'vol.back': '← back to volumes',
+    'vol.upload': '⬆ Upload',
+    'vol.upload_progress': 'Uploading {i}/{n} — {name}…',
+    'vol.upload_failed': 'Upload failed: {err}',
+    'vol.download': '⬇ Download',
+    'vol.edit': '✎ Edit',
+    'vol.save': 'Save',
+    'vol.cancel_edit': 'Cancel',
+    'vol.saved': 'Saved!',
+    'vol.save_failed': 'Save failed: {err}',
+    'vol.binary_disabled': 'Binary file — edit disabled. Use Download to retrieve it.',
+    'vol.truncated_disabled': 'File is larger than 1MB and shown truncated — Download to edit it locally.',
     'team.agent': 'Agent',
     'team.rank': 'Rank',
     'team.model': 'Model',
@@ -481,6 +504,17 @@ const I18N = {
     'vol.empty.room': '该房间没有挂载任何存储卷。<br>请用 <code class="font-mono">--volume</code> 重新 hire 一个 Agent，或点击"显示全部"查看全局存储卷。',
     'vol.select_file': '选择一个文件',
     'vol.back': '← 返回存储卷列表',
+    'vol.upload': '⬆ 上传',
+    'vol.upload_progress': '上传中 {i}/{n} — {name}…',
+    'vol.upload_failed': '上传失败：{err}',
+    'vol.download': '⬇ 下载',
+    'vol.edit': '✎ 编辑',
+    'vol.save': '保存',
+    'vol.cancel_edit': '取消',
+    'vol.saved': '已保存！',
+    'vol.save_failed': '保存失败：{err}',
+    'vol.binary_disabled': '二进制文件 — 不支持编辑，请用「下载」获取。',
+    'vol.truncated_disabled': '文件大于 1MB 已被截断显示 — 请下载到本地编辑。',
     'team.agent': 'Agent',
     'team.rank': '职级',
     'team.model': '模型',
@@ -1962,15 +1996,55 @@ async function saveBindings(next) {
 
 async function selectVolume(name) {
   state.selectedVolume = name;
-  // Replace volume-list with the tree of this volume but keep a back nav.
+  // Replace volume-list with: back nav + upload row + tree.
   const el = document.getElementById('volume-list');
-  el.innerHTML = `<div class="cursor-pointer text-xs text-blue-600 px-1 py-1" id="vol-back">${escapeHtml(t('vol.back'))}</div>`;
-  document.getElementById('vol-back').onclick = renderVolumeList;
+  el.innerHTML = `
+    <div class="flex items-center gap-2 px-1 py-1 mb-1 border-b border-slate-100">
+      <button class="text-xs text-blue-600 hover:underline" id="vol-back">${escapeHtml(t('vol.back'))}</button>
+      <button id="vol-upload-btn" class="ml-auto text-xs bg-blue-600 hover:bg-blue-700 text-white px-2 py-0.5 rounded">${escapeHtml(t('vol.upload'))}</button>
+      <input type="file" id="vol-upload-input" multiple class="hidden">
+    </div>
+    <div id="vol-upload-status" class="text-[10px] text-slate-500 px-1"></div>
+    <div id="vol-tree-wrap"></div>
+  `;
+  document.getElementById('vol-back').onclick = () => {
+    // Clear the right-pane viewer + actions when leaving volume scope.
+    document.getElementById('vol-file-actions').classList.add('hidden');
+    document.getElementById('vol-file-name').textContent = t('vol.select_file');
+    document.getElementById('vol-file-size').textContent = '';
+    document.getElementById('vol-file-body').textContent = '';
+    document.getElementById('vol-file-edit').value = '';
+    renderVolumeList();
+  };
+  document.getElementById('vol-upload-btn').onclick = () => {
+    document.getElementById('vol-upload-input').click();
+  };
+  document.getElementById('vol-upload-input').addEventListener('change', async e => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (files.length === 0) return;
+    const status = document.getElementById('vol-upload-status');
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      status.textContent = t('vol.upload_progress', {i: i + 1, n: files.length, name: f.name});
+      const fd = new FormData();
+      fd.append('file', f, f.name);
+      const r = await fetch(`/api/volumes/${name}/files`, {method: 'POST', body: fd});
+      if (!r.ok) {
+        status.textContent = '';
+        alert(t('vol.upload_failed', {err: `${f.name}: ${r.status} ${await r.text()}`}));
+        return;
+      }
+    }
+    status.textContent = '';
+    // Re-fetch tree to surface the new files.
+    selectVolume(name);
+  });
   try {
     const tree = await api(`/api/volumes/${name}/tree`);
-    el.appendChild(renderTree(tree, ''));
+    document.getElementById('vol-tree-wrap').appendChild(renderTree(tree, ''));
   } catch (e) {
-    el.innerHTML += `<div class="text-xs text-red-600 px-2 py-1">${escapeHtml(e.message)}</div>`;
+    document.getElementById('vol-tree-wrap').innerHTML = `<div class="text-xs text-red-600 px-2 py-1">${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -1996,16 +2070,136 @@ function renderTree(entries, indent) {
   return wrap;
 }
 
+// volFileState carries everything the per-file action handlers need
+// across the user's view → edit → save round-trip without re-fetching
+// the inline GET. Reset on every loadVolumeFile call.
+const volFileState = {
+  path: '',         // posix-relative path inside the volume
+  text: '',         // the body of the most recent GET (text view)
+  isBinary: false,  // null bytes detected → block edit, prefer download
+  isTruncated: false, // X-Truncated header → block edit (would clobber)
+  editing: false,
+};
+
 async function loadVolumeFile(path) {
+  const body = document.getElementById('vol-file-body');
+  const edit = document.getElementById('vol-file-edit');
+  const actions = document.getElementById('vol-file-actions');
+  const editBtn = document.getElementById('vol-edit-btn');
+
+  // Reset edit mode in case the user was editing a different file.
+  exitVolFileEditMode();
+
   try {
     const r = await fetch(`/api/volumes/${state.selectedVolume}/file?p=` + encodeURIComponent(path));
     const text = await r.text();
     document.getElementById('vol-file-name').textContent = state.selectedVolume + '/' + path;
     document.getElementById('vol-file-size').textContent = r.headers.get('X-File-Size') ? formatBytes(parseInt(r.headers.get('X-File-Size'), 10)) : '';
-    document.getElementById('vol-file-body').textContent = text;
+    body.textContent = text;
+    edit.value = text;
+
+    volFileState.path = path;
+    volFileState.text = text;
+    // Conservative binary detection: any U+0000 in the first 1 KB.
+    // Misclassifies legitimate text-with-nulls (rare) but never the
+    // other way — and edit-disabled-on-binary is the safer error.
+    volFileState.isBinary = / /.test(text.slice(0, 1024));
+    volFileState.isTruncated = r.headers.get('X-Truncated') === 'true';
+
+    actions.classList.remove('hidden');
+    actions.classList.add('flex');
+
+    // Edit availability: disabled for binary or truncated content.
+    const editable = !volFileState.isBinary && !volFileState.isTruncated;
+    editBtn.disabled = !editable;
+    editBtn.classList.toggle('opacity-50', !editable);
+    editBtn.classList.toggle('cursor-not-allowed', !editable);
+    if (volFileState.isBinary) {
+      editBtn.title = t('vol.binary_disabled');
+    } else if (volFileState.isTruncated) {
+      editBtn.title = t('vol.truncated_disabled');
+    } else {
+      editBtn.title = '';
+    }
   } catch (e) {
-    document.getElementById('vol-file-body').textContent = 'load failed: ' + e.message;
+    body.textContent = 'load failed: ' + e.message;
+    actions.classList.add('hidden');
   }
+}
+
+// Wire the persistent action buttons once at boot. The buttons live
+// in the static HTML so wiring here is fine — handlers consult
+// volFileState for the active file.
+document.getElementById('vol-download-btn').onclick = () => {
+  if (!volFileState.path) return;
+  // Trigger a browser download via a hidden anchor — the daemon's
+  // ?download=1 sets Content-Disposition, so the browser saves under
+  // the original filename.
+  const url = `/api/volumes/${state.selectedVolume}/file?p=${encodeURIComponent(volFileState.path)}&download=1`;
+  const a = document.createElement('a');
+  a.href = url;
+  // download attribute hints the filename when same-origin; the
+  // server's Content-Disposition takes precedence anyway.
+  a.download = volFileState.path.split('/').pop();
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+};
+
+document.getElementById('vol-edit-btn').onclick = () => {
+  if (!volFileState.path) return;
+  if (volFileState.isBinary || volFileState.isTruncated) return;
+  enterVolFileEditMode();
+};
+
+document.getElementById('vol-save-btn').onclick = async () => {
+  if (!volFileState.editing) return;
+  const newText = document.getElementById('vol-file-edit').value;
+  const saveBtn = document.getElementById('vol-save-btn');
+  const original = saveBtn.textContent;
+  saveBtn.disabled = true;
+  try {
+    const r = await fetch(
+      `/api/volumes/${state.selectedVolume}/file?p=${encodeURIComponent(volFileState.path)}`,
+      {method: 'PUT', body: newText},
+    );
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    saveBtn.textContent = t('vol.saved');
+    setTimeout(() => { saveBtn.textContent = original; }, 1200);
+    // Refresh content + size from server so subsequent edits are
+    // diffed against ground truth (catches normalisation if any).
+    await loadVolumeFile(volFileState.path);
+  } catch (e) {
+    alert(t('vol.save_failed', {err: e.message}));
+  } finally {
+    saveBtn.disabled = false;
+  }
+};
+
+document.getElementById('vol-cancel-btn').onclick = () => {
+  exitVolFileEditMode();
+  // Restore the last loaded text so the textarea is clean if the user
+  // re-enters edit mode without re-clicking the file.
+  document.getElementById('vol-file-edit').value = volFileState.text;
+};
+
+function enterVolFileEditMode() {
+  volFileState.editing = true;
+  document.getElementById('vol-file-body').classList.add('hidden');
+  document.getElementById('vol-file-edit').classList.remove('hidden');
+  document.getElementById('vol-edit-btn').classList.add('hidden');
+  document.getElementById('vol-save-btn').classList.remove('hidden');
+  document.getElementById('vol-cancel-btn').classList.remove('hidden');
+  document.getElementById('vol-file-edit').focus();
+}
+
+function exitVolFileEditMode() {
+  volFileState.editing = false;
+  document.getElementById('vol-file-body').classList.remove('hidden');
+  document.getElementById('vol-file-edit').classList.add('hidden');
+  document.getElementById('vol-edit-btn').classList.remove('hidden');
+  document.getElementById('vol-save-btn').classList.add('hidden');
+  document.getElementById('vol-cancel-btn').classList.add('hidden');
 }
 
 // ── Team tab ──────────────────────────────────────────────────────
